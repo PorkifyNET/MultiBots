@@ -54,19 +54,35 @@ local function held_count(value)
 	return #split_csv(value)
 end
 
+local economy_consumables = {
+	c_hermit = true,
+	c_temperance = true,
+}
+
+local function actionable_consumables(failure)
+	local keys = split_csv(failure.consumables)
+	if #keys == 0 then return failure.consumables_remaining end
+	local count = 0
+	for _, key in ipairs(keys) do
+		if not economy_consumables[key] then count = count + 1 end
+	end
+	return count
+end
+
 local function failure_anomalies(failure)
 	local flags = {}
+	local consumables = actionable_consumables(failure)
 	if failure.deficit < 5 then flags[#flags + 1] = "near miss <5%"
 	elseif failure.deficit < 10 then flags[#flags + 1] = "near miss <10%" end
 	if failure.hands_remaining > 0 then flags[#flags + 1] = "unused hands=" .. failure.hands_remaining end
 	if failure.discards_remaining > 0 then flags[#flags + 1] = "unused discards=" .. failure.discards_remaining end
-	if failure.consumables_remaining > 0 then
-		flags[#flags + 1] = "unused consumables=" .. failure.consumables_remaining
+	if consumables > 0 then
+		flags[#flags + 1] = "unused consumables=" .. consumables
 	end
 	local half_discards = failure.discards_available > 0
 		and failure.discards_remaining >= math.ceil(failure.discards_available / 2)
 	if failure.hands_remaining > 0 or half_discards
-		or (failure.deficit < 10 and (failure.discards_remaining > 0 or failure.consumables_remaining > 0)) then
+		or (failure.deficit < 10 and (failure.discards_remaining > 0 or consumables > 0)) then
 		flags[#flags + 1] = "suspicious resource conservation"
 	end
 	return flags
@@ -120,6 +136,7 @@ local function observe(kind, values)
 			consumables_remaining = tonumber(values.consumables_remaining)
 				or held_count(values.consumables),
 			consumables_available = tonumber(values.consumables_available) or 0,
+			consumables = values.consumables,
 			snapshot_id = values.snapshot_id,
 		}
 		failure.anomalies = failure_anomalies(failure)

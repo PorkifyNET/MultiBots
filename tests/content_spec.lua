@@ -157,6 +157,7 @@ local lucky_fortune_reported = Content.build({
 	Joker = {
 		{ key = "j_8_ball" }, { key = "j_egg" }, { key = "j_midas_mask" },
 		{ key = "j_mp_lets_go_gambling" }, { key = "j_mp_penny_pincher" },
+		{ key = "j_mp_skip_off" },
 		{ key = "j_obelisk" }, { key = "j_rough_gem" }, { key = "j_smeared" },
 	},
 	Planet = {
@@ -168,10 +169,16 @@ local lucky_fortune_reported = Content.build({
 	},
 	Voucher = { { key = "v_tarot_tycoon" } },
 }, {}, {})
-assert(#lucky_fortune_reported.jokers == 8 and #lucky_fortune_reported.planets == 4
+assert(#lucky_fortune_reported.jokers == 9 and #lucky_fortune_reported.planets == 4
 	and #lucky_fortune_reported.deck_tools == 1 and #lucky_fortune_reported.vouchers == 1
 	and Content.summary(lucky_fortune_reported).skipped == 0,
 	"all Lucky Fortune report objects should have headless adapters")
+
+local violet_chad_reported = Content.build({
+	Joker = { { key = "j_ring_master" }, { key = "j_vagabond" } },
+}, {}, {})
+assert(#violet_chad_reported.jokers == 2 and Content.summary(violet_chad_reported).skipped == 0,
+	"Showman and Vagabond should have headless adapters")
 
 local jolly_midas_reported = Content.build({
 	Planet = { { key = "c_planet_x", cost = 3, config = { hand_type = "Five of a Kind" } } },

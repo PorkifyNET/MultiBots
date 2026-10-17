@@ -552,6 +552,17 @@ function Strategy.joker_utility(state, joker, plan)
 	elseif effect.kind == "round_tarot_generation" then
 		local pressure = Strategy.deck_fix_pressure and Strategy.deck_fix_pressure(state) or 0
 		value = 18 + math.min(8, pressure * 0.4)
+	elseif effect.kind == "low_money_tarot" then
+		local slots = math.max(0, (state.consumable_limit or 2) - #(state.consumables or {}))
+		local active = (tonumber(state.money) or 0) <= (effect.threshold or 3)
+		value = active and (18 + math.min(8, slots * 4)) or (slots > 0 and 15 or 8)
+	elseif effect.kind == "duplicate_shop_offers" then
+		value = 10
+		local seen = {}
+		for _, key in ipairs(state.jokers or {}) do
+			if seen[key] then value = 18; break end
+			seen[key] = true
+		end
 	elseif effect.kind == "pack_tarot_chance" then
 		local pressure = Strategy.deck_fix_pressure and Strategy.deck_fix_pressure(state) or 0
 		value = 14 + math.min(8, pressure * 0.3)
@@ -756,6 +767,12 @@ function Strategy.joker_utility(state, joker, plan)
 		local hand_value = hands < 0 and 18 or 4
 		value = 18 + hands * hand_value + discards * discard_value - lost_discards * 1.5
 			+ (effect.hand_size or 0) * 6
+	elseif effect.kind == "skip_advantage_resources" then
+		local advantage = math.max(0,
+			(tonumber(state.skips) or 0) - (tonumber(state.opponent_skips) or 0))
+		-- Worth little before a lead exists; each lead grants both another scoring
+		-- attempt and another discard for every subsequent Blind.
+		value = 8 + advantage * (8 + (effect.hands or 0) * 4 + (effect.discards or 0) * 1.5)
 	elseif effect.kind == "copy_joker" then
 		value = #(state.jokers or {}) == 0 and 8 or 24
 		for _, key in ipairs(state.jokers or {}) do

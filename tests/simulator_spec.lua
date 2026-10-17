@@ -405,6 +405,21 @@ for _, decision in ipairs(replacement.decisions) do
 end
 assert(bought_upgrade and sold_weak, "a full build should sell its weakest Joker for a better affordable one")
 
+local skip_off = modules.Simulator.new({
+	seed = "SKIP-OFF", difficulty = "expert", the_order = true,
+	content_catalog = {
+		jokers = { { key = "j_mp_skip_off", cost = 5, utility = 20,
+			effect = { kind = "skip_advantage_resources", hands = 1, discards = 1 } } },
+		planets = {}, deck_tools = {}, packs = {}, vouchers = {},
+	},
+}, modules)
+skip_off.jokers = { "j_mp_skip_off" }
+skip_off.skips, skip_off.opponent_skips = 3, 1
+local skip_off_round = modules.Simulator.begin_round(skip_off, 100, "Small")
+assert(skip_off_round.starting_hands == skip_off.hands_per_round + 2
+	and skip_off_round.starting_discards == skip_off.discards_per_round + 2,
+	"Skip-Off should grant one hand and discard per skip lead")
+
 local decayed_replacement = modules.Simulator.new({
 	seed = "DECAYED-REPLACE", difficulty = "expert", the_order = true,
 	content_catalog = {
@@ -847,6 +862,21 @@ local showman_report = modules.Simulator.visit_shop(showman_jokers, { "j_square"
 assert(showman_report.purchases == 2 and #showman_jokers.jokers == 3,
 	"an active Showman should allow the bot to acquire duplicate Jokers")
 
+showman_jokers = modules.Simulator.new({
+	seed = "VAGABOND", difficulty = "expert", hands_per_round = 1,
+	content_catalog = {
+		jokers = { { key = "j_vagabond", cost = 6, utility = 24,
+			effect = { kind = "low_money_tarot", threshold = 3 } } },
+		planets = {}, packs = {}, vouchers = {},
+		deck_tools = { { key = "c_strength", set = "Tarot", cost = 3,
+			effect = "rank", amount = 1 } },
+	},
+}, modules)
+showman_jokers.jokers, showman_jokers.money = { "j_vagabond" }, 3
+modules.Simulator.play_round(showman_jokers, nil, "Small")
+assert(#showman_jokers.consumables == 1,
+	"Vagabond should generate a Tarot after a hand played at or below its money threshold")
+
 local arcana = modules.Simulator.new({ seed = "ARCANA", difficulty = "expert", the_order = true }, modules)
 arcana.money = 26
 modules.Simulator.set_ante(arcana, 2)
@@ -896,11 +926,11 @@ assert(inventory.tarots_used == 0,
 local held_snapshot = modules.Simulator.snapshot(inventory)
 assert(held_snapshot.consumable_limit == 2 and #held_snapshot.consumables == 2,
 	"consumable inventory and capacity should survive snapshots")
-inventory.money = 20
+inventory.money = 14
 modules.Simulator.visit_shop(inventory, {})
 assert(#inventory.consumables == 1 and inventory.consumables[1].key == "c_temperance"
-	and inventory.tarots_used == 1 and inventory.money == 40,
-	"the bot should hold Hermit until its payout is capped, then use it at a later shop")
+	and inventory.tarots_used == 1 and inventory.money == 28,
+	"the bot should cash a material Hermit payout at shop start instead of repeatedly spending below its cap")
 local used_hermit = false
 for _, decision in ipairs(inventory.decisions) do
 	if decision.type == "use_consumable" and decision.key == "c_hermit" then used_hermit = true end
@@ -913,7 +943,7 @@ local replacement_inventory = modules.Simulator.new({
 replacement_inventory.money = 12
 modules.Simulator.set_ante(replacement_inventory, 2)
 modules.Simulator.visit_shop(replacement_inventory, { "c_hermit", "c_temperance" })
-replacement_inventory.money = 10
+replacement_inventory.money = 8
 local replacement_report = modules.Simulator.visit_shop(replacement_inventory, { "c_immolate" })
 local sold_consumable = false
 for _, decision in ipairs(replacement_inventory.decisions) do
