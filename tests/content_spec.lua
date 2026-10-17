@@ -175,10 +175,13 @@ assert(#lucky_fortune_reported.jokers == 9 and #lucky_fortune_reported.planets =
 	"all Lucky Fortune report objects should have headless adapters")
 
 local violet_chad_reported = Content.build({
-	Joker = { { key = "j_ring_master" }, { key = "j_vagabond" } },
+	Joker = {
+		{ key = "j_ring_master" }, { key = "j_vagabond" },
+		{ key = "j_certificate" }, { key = "j_sixth_sense" },
+	},
 }, {}, {})
-assert(#violet_chad_reported.jokers == 2 and Content.summary(violet_chad_reported).skipped == 0,
-	"Showman and Vagabond should have headless adapters")
+assert(#violet_chad_reported.jokers == 4 and Content.summary(violet_chad_reported).skipped == 0,
+	"reported Violet Chad Jokers should have headless adapters")
 
 local jolly_midas_reported = Content.build({
 	Planet = { { key = "c_planet_x", cost = 3, config = { hand_type = "Five of a Kind" } } },

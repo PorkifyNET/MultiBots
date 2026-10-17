@@ -298,6 +298,12 @@ poor_reroll.jokers = { "j_golden" }
 assert(modules.Simulator.should_reroll(poor_reroll,
 	{ purchases = 1, supported_keys = { "j_golden" } }, 5),
 	"an income Joker should allow catch-up rerolls below the literal interest cap")
+poor_reroll.jokers = { "j_joker" }
+poor_reroll.money, poor_reroll.ante = 8, 3
+poor_reroll.previous_pvp_score, poor_reroll.previous_player_score = 13000, 88000
+assert(modules.Simulator.should_reroll(poor_reroll,
+	{ purchases = 2, supported_keys = { "j_joker" } }, 5),
+	"a severe PvP deficit should fund an emergency power reroll despite prior purchases")
 end
 local live_snapshot = modules.Simulator.snapshot(live)
 assert(#live_snapshot.deck > 0 and live_snapshot.money == live.money, "live snapshot should reflect current state")
@@ -891,6 +897,42 @@ showman_jokers.jokers, showman_jokers.money = { "j_vagabond" }, 3
 modules.Simulator.play_round(showman_jokers, nil, "Small")
 assert(#showman_jokers.consumables == 1,
 	"Vagabond should generate a Tarot after a hand played at or below its money threshold")
+
+showman_jokers = modules.Simulator.new({
+	seed = "CERTIFICATE", difficulty = "expert",
+	content_catalog = {
+		jokers = { { key = "j_certificate", cost = 6, utility = 25,
+			effect = { kind = "round_sealed_card", count = 1 } } },
+		planets = {}, deck_tools = {}, packs = {}, vouchers = {},
+	},
+}, modules)
+showman_jokers.jokers = { "j_certificate" }
+showman_report = #showman_jokers.deck
+modules.Simulator.begin_round(showman_jokers, 100, "Small")
+assert(#showman_jokers.deck == showman_report + 1 and showman_jokers.deck[#showman_jokers.deck].seal,
+	"Certificate should add one sealed playing card at Blind start")
+
+showman_jokers = modules.Simulator.new({
+	seed = "SIXTH-SENSE", difficulty = "expert", hands_per_round = 1,
+	content_catalog = {
+		jokers = { { key = "j_sixth_sense", cost = 6, utility = 25,
+			effect = { kind = "first_six_spectral" } } },
+		planets = {}, packs = {}, vouchers = {},
+		deck_tools = { { key = "c_aura", set = "Spectral", cost = 4, effect = "edition" } },
+	},
+}, modules)
+showman_jokers.jokers, showman_jokers.deck = { "j_sixth_sense" }, {}
+for rank = 2, 9 do
+	showman_report = {
+		suit = modules.Cards.suits[((rank - 2) % #modules.Cards.suits) + 1],
+		rank = ({ 2, 4, 6, 8, 10, 12, 13, 14 })[rank - 1],
+	}
+	modules.Cards.refresh(showman_report, ":sixth:" .. rank)
+	showman_jokers.deck[#showman_jokers.deck + 1] = showman_report
+end
+modules.Simulator.play_round(showman_jokers, nil, "Small")
+assert(#showman_jokers.deck == 7 and #showman_jokers.consumables == 1,
+	"Sixth Sense should prioritize, destroy, and convert the first single 6 into a Spectral card")
 
 local arcana = modules.Simulator.new({ seed = "ARCANA", difficulty = "expert", the_order = true }, modules)
 arcana.money = 26
