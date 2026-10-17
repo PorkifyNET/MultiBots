@@ -1071,6 +1071,16 @@ local function update_scaling_jokers(state, result, played_cards)
 			elseif effect.kind == "low_money_tarot"
 				and (tonumber(state.money) or 0) <= (effect.threshold or 3) then
 				generate_tarot(state, key, "low_money_hand")
+			elseif effect.kind == "first_six_spectral" and #played_cards == 1
+				and played_cards[1].rank == 6 then
+				local round_hands = 0
+				for _, uses in pairs(state.round_hand_usage or {}) do round_hands = round_hands + uses end
+				if round_hands == 1 then
+					remove_card(state.deck, played_cards[1])
+					generate_spectral(state, key, "first_six")
+					record_decision(state, { type = "destroy_playing_card", key = key,
+						ante = state.ante, round = state.current_round or state.round })
+				end
 			end
 		end
 	end
@@ -1224,6 +1234,8 @@ local function joker_strategy(state)
 			elseif effect.kind == "played_hand_money" and type(state.joker_state[key]) == "string" then
 				local hand = state.joker_state[key]
 				strategy.hand_money[hand] = (strategy.hand_money[hand] or 0) + effect.amount
+			elseif effect.kind == "first_six_spectral" and next(state.round_hand_usage or {}) == nil then
+				strategy.first_six_spectral = true
 			end
 		end
 	end
@@ -1300,6 +1312,23 @@ local function prepare_round_jokers(state, round_name)
 					type = "create_playing_card", key = key, enhancement = "m_stone",
 					ante = state.ante, round = state.current_round or state.round,
 				})
+			end
+		elseif effect and effect.kind == "round_sealed_card" then
+			local stream = state.rng:fork(table.concat({
+				"certificate", key, tostring(state.ante), tostring(state.round), tostring(round_name),
+			}, ":"))
+			local seals = { "Blue", "Gold", "Purple", "Red" }
+			for generated = 1, effect.count or 1 do
+				local card = {
+					suit = state.Cards.suits[stream:integer(1, #state.Cards.suits)],
+					rank = stream:integer(2, 14), seal = seals[stream:integer(1, #seals)],
+				}
+				state.Cards.refresh(card, ":certificate:" .. state.ante .. ":" .. state.round .. ":" .. generated)
+				state.deck[#state.deck + 1] = card
+				state.cards_added = state.cards_added + 1
+				adjust_owned_jokers(state, "deck_add_scaling_xmult", 1)
+				record_decision(state, { type = "create_playing_card", key = key, seal = card.seal,
+					ante = state.ante, round = state.current_round or state.round })
 			end
 		end
 	end
@@ -3045,9 +3074,14 @@ function Simulator.should_reroll(state, report, cost)
 	if cost == 0 then return true end
 	local interest_floor = math.max(0, (tonumber(state.interest_cap) or 5) * 5)
 	local economy_joker = has_economy_joker(state)
-	if not economy_joker and state.money - cost < interest_floor then return false end
+	local previous_bot = tonumber(state.previous_pvp_score) or 0
+	local previous_player = tonumber(state.previous_player_score) or 0
+	local emergency = (tonumber(state.ante) or 1) >= 3 and previous_bot > 0
+		and previous_player >= previous_bot * 2
+	if not economy_joker and not emergency and state.money - cost < interest_floor then return false end
 	local reserve = not economy_joker and state.Strategy
 		and state.Strategy.reserve(state, state.strategy_plan) or 0
+	if emergency then reserve = 0 end
 	if state.money - cost < reserve then return false end
 	local has_power = false
 	for _, key in ipairs(state.jokers or {}) do
@@ -3082,6 +3116,7 @@ function Simulator.should_reroll(state, report, cost)
 	end
 	local surplus = state.money - cost - reserve
 	local late_power_gap = (tonumber(state.ante) or 1) >= 4 and not has_power
+	if emergency and not has_power then return state.money >= cost end
 	if late_power_gap then return true end
 	if (tonumber(report.purchases) or 0) > 0 then return false end
 	if surplus >= 25 then return true end

@@ -146,6 +146,11 @@ local function scaling_value(result, strategy, hands_left, played_count, weights
 		-- hand a meaningful tie-break without sacrificing an imminent clear.
 		value = value + strategy.hand_money[result.name] * 35
 	end
+	if strategy.first_six_spectral and played_count == 1
+		and result.scoring_cards and result.scoring_cards[1]
+		and result.scoring_cards[1].rank == 6 then
+		value = value + 500
+	end
 	return value * weight({ weights = weights }, "future_value")
 end
 
