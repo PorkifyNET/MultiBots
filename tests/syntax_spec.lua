@@ -1,0 +1,40 @@
+for _, path in ipairs({
+	"main.lua",
+	"generator.lua",
+	"config.lua",
+	"bot/prng.lua",
+	"bot/weights.lua",
+	"bot/cards.lua",
+	"bot/content.lua",
+	"bot/names.lua",
+	"bot/rulesets.lua",
+	"bot/evaluator.lua",
+	"bot/strategy.lua",
+	"bot/policy.lua",
+	"bot/simulator.lua",
+	"bot/playback.lua",
+	"bot/endgame.lua",
+	"bot/local_server.lua",
+	"bot/compat.lua",
+	"bot/logger.lua",
+	"bot/order.lua",
+	"bot/peer.lua",
+	"bot/peer_pool.lua",
+	"bot/spectator_guard.lua",
+	"bot/socket_thread.lua",
+	"bot/status.lua",
+	"bot/ui.lua",
+	"training/config.lua",
+	"training/json.lua",
+	"training/seeds.lua",
+	"training/opponents.lua",
+	"training/fitness.lua",
+	"training/evolution.lua",
+	"training/snapshot_branch.lua",
+	"training/cli.lua",
+}) do
+	local chunk, err = loadfile(path)
+	assert(chunk, path .. ": " .. tostring(err))
+end
+
+print("syntax_spec: ok")

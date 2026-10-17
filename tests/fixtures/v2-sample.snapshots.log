@@ -1,0 +1,8 @@
+MULTIBOTS_SNAPSHOTS v1 encoding=percent
+10:00:00 SNAPSHOT snapshot=seed:SAMPLE snapshot_id=1
+10:00:01 SNAPSHOT snapshot=seed:SAMPLE|ante:4 snapshot_id=2
+10:00:02 SNAPSHOT snapshot=seed:SAMPLE snapshot_id=3
+10:00:03 SNAPSHOT snapshot=seed:SAMPLE snapshot_id=4
+10:00:04 SNAPSHOT snapshot=seed:SAMPLE snapshot_id=5
+10:00:05 SNAPSHOT snapshot=seed:SAMPLE snapshot_id=6
+10:00:06 SNAPSHOT snapshot=seed:SAMPLE|ante:5|round:Big snapshot_id=7

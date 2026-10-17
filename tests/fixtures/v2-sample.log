@@ -1,0 +1,11 @@
+MULTIBOTS_LOG v2 encoding=percent difficulty=expert high_regret_threshold=25 reorder_threshold=3 score_variance_ratio=4
+10:00:00 DECISION action=play ante=4 decision_id=1 plan=Pair/High%20Card(0.80) regret=0 score=100 snapshot_id=1
+10:00:01 DECISION action=play ante=4 decision_id=2 plan=Flush/Pair(0.70) regret=31.7 score=500 snapshot_id=2
+10:00:02 SHOP_DECISION action=shop_decision ante=4 chosen=skip decision_id=3 offered=j_joker,j_unknown,j_unknown shop_id=4:1 snapshot_id=3 supported=j_joker
+10:00:03 DECISION action=reorder_jokers ante=4 decision_id=4 from=j_brainstorm,j_joker round=PvP snapshot_id=4 to=j_joker,j_brainstorm
+10:00:04 DECISION action=reorder_jokers ante=4 decision_id=5 from=j_joker,j_brainstorm round=PvP snapshot_id=5 to=j_brainstorm,j_joker
+10:00:05 DECISION action=reorder_jokers ante=4 decision_id=6 from=j_brainstorm,j_joker round=PvP snapshot_id=6 to=j_joker,j_brainstorm
+10:00:06 BLIND_FAILURE action=fail_round ante=5 blind=Big consumables=c_temperance consumables_available=1 consumables_remaining=1 decision_id=7 discards_available=3 discards_remaining=2 hands_available=4 hands_remaining=0 score=951 snapshot_id=7 target=1000
+10:00:07 PVP ante=4 bot_score=1200 margin=200 player_score=1000
+10:00:08 SUMMARY failures=1 high_regret=1 invalid=0 unsupported_encounters=2 unsupported_unique=1
+10:00:09 END ante=5 result=loseGame

@@ -42,6 +42,4 @@ luac.out
 # Project-specific files
 logs/
 notes/
-training/
-tools/
-tests/
+training/results/
