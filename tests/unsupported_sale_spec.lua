@@ -29,7 +29,9 @@ modules.Simulator.visit_shop(run, {})
 
 assert(#run.jokers == 1 and run.jokers[1] == "j_supported",
 	"entering a shop should sell unsupported Jokers while retaining supported ones")
-assert(run.money == initial_money + 2 and run.joker_limit == 5,
+-- a Negative edition adds $5 to a Joker's cost (Card:set_cost,
+-- card.lua), so it sells for $3 instead of $1.
+assert(run.money == initial_money + 4 and run.joker_limit == 5,
 	"selling unsupported Jokers should pay their sell values and release Negative slots")
 local unsupported_sales = 0
 for _, decision in ipairs(run.decisions) do

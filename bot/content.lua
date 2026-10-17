@@ -160,9 +160,10 @@ local voucher_definitions = {
 	{ key = "v_overstock_plus", cost = 10, utility = 36, effect = "shop_slots", amount = 1 },
 	{ key = "v_paint_brush", cost = 10, utility = 36, effect = "hand_size", amount = 1 },
 	{ key = "v_seed_money", cost = 10, utility = 24, effect = "interest_cap", amount = 10 },
-	{ key = "v_planet_merchant", cost = 10, utility = 24, effect = "planet_rate", amount = 2 },
+	-- Planet rate 4 -> 9.6 (game.lua config extra = 9.6/4).
+	{ key = "v_planet_merchant", cost = 10, utility = 24, effect = "planet_rate", amount = 9.6 / 4 },
 	{ key = "v_reroll_surplus", cost = 10, utility = 24, effect = "reroll_discount", amount = 2 },
-	{ key = "v_reroll_glut", cost = 10, utility = 30, effect = "reroll_discount", amount = 2, runtime_only = true },
+	{ key = "v_reroll_glut", cost = 10, utility = 30, effect = "reroll_discount", amount = 2 },   -- offered by the simulator (upgrade Voucher)
 	{ key = "v_clearance_sale", cost = 10, utility = 27, effect = "shop_discount", amount = 25 },
 	{ key = "v_liquidation", cost = 10, utility = 34, effect = "shop_discount", amount = 50 },
 	{ key = "v_wasteful", cost = 10, utility = 30, effect = "discards", amount = 1 },
@@ -172,8 +173,18 @@ local voucher_definitions = {
 	{ key = "v_tarot_merchant", cost = 10, utility = 24, effect = "tarot_rate", amount = 2.4, runtime_only = true },
 	{ key = "v_tarot_tycoon", cost = 10, utility = 30, effect = "tarot_rate", amount = 8, runtime_only = true },
 	{ key = "v_magic_trick", cost = 10, utility = 20, effect = "playing_cards_in_shop", amount = 1, runtime_only = true },
-	{ key = "v_money_tree", cost = 10, utility = 32, effect = "interest_cap", amount = 20, runtime_only = true },
+	-- Money Tree and Reroll Glut are offered by the
+	-- simulator's shop too (upgrade Vouchers, see below), so not runtime_only.
+	{ key = "v_money_tree", cost = 10, utility = 32, effect = "interest_cap", amount = 20 },
 	{ key = "v_blank", cost = 10, utility = 1, effect = "none" },
+	-- upgrade Vouchers the existing effects already simulate
+	-- (card.lua Card:apply_to_run, game.lua configs). Values follow the base
+	-- Voucher each one upgrades; Antimatter adds a Joker slot.
+	{ key = "v_glow_up", cost = 10, utility = 25, effect = "edition_rate", amount = 4 },
+	{ key = "v_nacho_tong", cost = 10, utility = 40, effect = "hands", amount = 1 },
+	{ key = "v_recyclomancy", cost = 10, utility = 30, effect = "discards", amount = 1 },
+	{ key = "v_palette", cost = 10, utility = 36, effect = "hand_size", amount = 1 },
+	{ key = "v_antimatter", cost = 10, utility = 40, effect = "joker_slots", amount = 1 },
 }
 
 local joker_definitions = {
@@ -233,7 +244,8 @@ local joker_definitions = {
 	{ key = "j_cartomancer", cost = 6, utility = 26,
 		effect = { kind = "round_tarot_generation", count = 1 } },
 	{ key = "j_vagabond", cost = 6, utility = 24, runtime_only = true,
-		effect = { kind = "low_money_tarot", threshold = 3 } },
+		-- Vagabond: a Tarot when a hand is played with $4 or less (game.lua config extra = 4).
+		effect = { kind = "low_money_tarot", threshold = 4 } },
 	{ key = "j_ring_master", cost = 5, utility = 18, runtime_only = true,
 		effect = { kind = "duplicate_shop_offers" } },
 	{ key = "j_space", cost = 5, utility = 25,
@@ -313,7 +325,8 @@ local joker_definitions = {
 	{ key = "j_8_ball", cost = 5, utility = 22,
 		effect = { kind = "played_rank_planet", rank = 8, count = 2 } },
 	{ key = "j_egg", cost = 4, utility = 18,
-		effect = { kind = "sell_value_growth", amount = 3 } },
+		-- Egg raises only its own sell value (card.lua end_of_round).
+		effect = { kind = "sell_value_growth", amount = 3, self_only = true } },
 	{ key = "j_obelisk", cost = 8, utility = 31,
 		effect = { kind = "avoid_most_played_xmult", initial = 1, amount = 0.2 } },
 	{ key = "j_midas_mask", cost = 6, utility = 24,
