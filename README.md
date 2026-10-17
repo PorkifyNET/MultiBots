@@ -30,6 +30,24 @@ slots. Resolved copy effects are cached per decision and reused across candidate
 hands, preserving exact choices while avoiding repeated copy-chain resolution.
 The order search itself remains factorial at six and seven slots.
 
+## Decision hooks and card values
+
+`bot/simulator.lua` holds only the game's rules. Every player decision (hand
+play, shop actions and rerolls, pack picks, consumable use and targets, Joker
+order, Blind skips, Luchador) is asked from a decision policy passed to
+`Simulator.new` / `Simulator.run` as `dependencies.Policy`; a policy that does
+not define a decision declines it. `bot/expert.lua` lists every decision hook
+with its context, and its Expert is MultiBots' own policy:
+`Expert.modules(modules)` returns the dependencies with the Expert as policy.
+An external policy can override single hooks and inherit the rest
+(`setmetatable(mine, { __index = Expert.policy(modules) })`).
+
+The Expert's built-in base value of every card is in `bot/expert_values.lua`.
+`bot/card_values.yaml` scales it per card on a 0 to 100 scale: 0 = worst,
+50 = no opinion (the Expert's own judgement, the default), 100 = best. The
+Expert's value of a card is its base value times value / 50, so 50 changes
+nothing and 100 doubles it. The simulator never reads either file.
+
 ## Decision logging
 
 Each match creates `logs/multibots-<timestamp>.log` with the header

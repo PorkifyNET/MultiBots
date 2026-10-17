@@ -11,6 +11,7 @@ local base = {
 	Policy = dofile("bot/policy.lua"),
 	Simulator = dofile("bot/simulator.lua"),
 }
+base = dofile("bot/expert.lua").modules(base)   -- MultiBots' Expert decides
 local Simulator = base.Simulator
 
 -- A scripted player: `script(args, turn)` returns { type, indices } and the
@@ -380,7 +381,7 @@ assert(fast_layout.score == exact_layout.score and fast_layout.score == math.flo
 -- 6. Shop rules: rerolls and debt (functions/button_callbacks.lua).
 ---------------------------------------------------------------------------
 
--- An external policy whose shop_step is `step(state, ctx, default)`.
+-- An external policy whose shop_step is `step(state, ctx)`.
 local function shop_player(step)
 	local modules = {}
 	for key, value in pairs(base) do modules[key] = value end
@@ -555,7 +556,7 @@ end
 local full = new_state(base, "SPECTRAL-FULL", { "j_joker", "j_jolly", "j_mad", "j_zany", "j_crazy" })
 assert(not Simulator.consumable_usable(full, spectral(full, "c_wraith")), "Wraith needs a free Joker slot")
 assert(not Simulator.consumable_usable(full, spectral(full, "c_ankh")), "Ankh needs a free Joker slot")
-assert(Simulator.deck_tool_offer(full, spectral(full, "c_wraith")).utility == 0, "an unusable Wraith is worth 0")
+assert(base.Expert.deck_tool_value(full, spectral(full, "c_wraith")) == 0, "an unusable Wraith is worth 0")
 
 -- Ankh: the remaining Joker is duplicated, the others destroyed.
 local ankh = new_state(base, "SPECTRAL-ANKH", { "j_joker", "j_jolly" })
@@ -583,7 +584,7 @@ assert(not Simulator.consumable_usable(ecto, spectral(ecto, "c_ectoplasm")), "no
 -- The Soul: the default pool has simulated Legendaries (Chicot, Caino,
 -- Perkeo, Triboulet, Yorick), so it creates a Joker the run can use.
 local soul = new_state(base, "SPECTRAL-SOUL", {})
-assert(Simulator.deck_tool_offer(soul, spectral(soul, "c_soul")).utility > 0,
+assert(base.Expert.deck_tool_value(soul, spectral(soul, "c_soul")) > 0,
 	"The Soul has value with simulated Legendary Jokers")
 
 -- Ghost Deck starts with Hex.

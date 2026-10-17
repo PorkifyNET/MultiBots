@@ -1,9 +1,5 @@
 local Simulator = {}
 
-local function weight(state, key)
-	return tonumber(state and state.weights and state.weights[key]) or 1
-end
-
 local function copy_array(source)
 	local out = {}
 	for i, value in ipairs(source or {}) do out[i] = value end
@@ -16,26 +12,41 @@ local function copy_map(source)
 	return out
 end
 
--- Decision hook dispatcher, for external policies.
--- Every player decision outside the hand goes through decide(state, name, ctx).
--- Simulator.defaults[name] is the Expert's behaviour (the old heuristic code,
--- moved behind the hook). A policy that defines state.Policy[name] makes the
--- decision instead; it receives the default and may call it at most once.
--- Hooks return a 1-based index into ctx.actions (optionally followed by a meta
--- table that only feeds the decision log). ctx.actions[1] is always the decline.
-Simulator.defaults = {}
-
-local function decide(state, name, ctx)
-	local default = Simulator.defaults[name]
-	local hook = state.Policy and state.Policy[name]
-	if hook then return hook(state, ctx, default) end
-	return default(state, ctx)
+-- The simulator holds the game's rules and nothing else. Every player
+-- decision is asked from the run's policy (dependencies.Policy, kept as
+-- state.Policy): decide(state, name, ctx) calls policy[name](state, ctx).
+-- A policy that has no function for a decision declines it: the caller passes
+-- the decline (the first action, no reroll, no skip, no change). bot/expert.lua
+-- describes every decision and its ctx; its Expert is MultiBots' own policy.
+-- Hooks that pick an action return a 1-based index into ctx.actions
+-- (optionally followed by a meta table whose `log` fields go into the
+-- decision's log entry).
+local function decide(state, name, ctx, ...)
+	local hook = state.Policy[name]
+	if hook then return hook(state, ctx) end
+	return ...
 end
 
--- Set only by external policies that make every decision. It
--- switches off the Expert-only rule deviations (silent auto-sells) for them.
-local function full_control(state)
-	return state.Policy and state.Policy.full_control == true or false
+-- Rule deviations a policy may ask for (state.expert_compat, set by the
+-- policy): MultiBots' Expert was tuned with them and plays identically only
+-- with them.
+--   use_created_cards       The Emperor / The High Priestess use the cards they
+--                           create at once instead of putting them into the
+--                           consumable slots.
+--   judgement_without_slot  Judgement can be used with full Joker slots (it
+--                           then does nothing).
+--   targetless_tools        A Tarot or Spectral that takes targets can be spent
+--                           without any (target_step lists a "none" action).
+local NO_COMPAT = {}
+local function compat(state)
+	return state.expert_compat or NO_COMPAT
+end
+
+-- Announcements at fixed points of the run (policy.observe(state, event, data)),
+-- for a policy that keeps its own memory.
+local function notify(state, event, data)
+	local observe = state.Policy.observe
+	if observe then observe(state, event, data) end
 end
 
 local blind_amounts = { 300, 800, 2000, 5000, 11000, 20000, 35000, 50000 }
@@ -125,6 +136,8 @@ local function apply_deck_back(state, deck_name)
 	end
 end
 
+-- the suit a suit Tarot without a fixed suit converts to (vanilla suit
+-- Tarots all name one)
 local function dominant_suit(deck)
 	local counts, best_suit, best_count = {}, "Spades", -1
 	for _, card in ipairs(deck) do counts[card.suit] = (counts[card.suit] or 0) + 1 end
@@ -132,96 +145,6 @@ local function dominant_suit(deck)
 		if (counts[suit] or 0) > best_count then best_suit, best_count = suit, counts[suit] or 0 end
 	end
 	return best_suit
-end
-
-local function card_quality(card)
-	return card.rank + (card.enhancement and 8 or 0) + (card.edition and 12 or 0) + (card.seal and 5 or 0)
-end
-
-local function ordered_cards(deck, ascending, score_card)
-	local result = {}
-	for _, card in ipairs(deck) do result[#result + 1] = card end
-	table.sort(result, function(a, b)
-		local aq, bq = (score_card or card_quality)(a), (score_card or card_quality)(b)
-		if aq == bq then return a.id < b.id end
-		if ascending then return aq < bq end
-		return aq > bq
-	end)
-	return result
-end
-
-local function deck_fix_preferences(state)
-	if state.Strategy and state.Strategy.deck_fix_target then
-		return state.Strategy.deck_fix_target(state)
-	end
-	local rank_counts, suit_counts = {}, {}
-	for _, card in ipairs(state.deck or {}) do
-		rank_counts[card.rank] = (rank_counts[card.rank] or 0) + 1
-		suit_counts[card.suit] = (suit_counts[card.suit] or 0) + 1
-	end
-	local rank_scores, suit_scores = {}, {}
-	for rank = 2, 14 do rank_scores[rank] = rank_counts[rank] or 0 end
-	for _, suit in ipairs(state.Cards.suits or { "Spades", "Hearts", "Clubs", "Diamonds" }) do
-		suit_scores[suit] = suit_counts[suit] or 0
-	end
-	-- Kings and Hearts are the strongest neutral destination: they preserve
-	-- face-card synergies and can grow into Baron/Bloodstone-style engines.
-	rank_scores[13] = (rank_scores[13] or 0) + 1.5
-	suit_scores.Hearts = (suit_scores.Hearts or 0) + 1.5
-	for _, key in ipairs(state.jokers or {}) do
-		local effect = state.joker_effects and state.joker_effects[key]
-		if effect then
-			if effect.rank then rank_scores[effect.rank] = (rank_scores[effect.rank] or 0) + 8 end
-			for _, rank in ipairs(effect.ranks or {}) do
-				-- Broad parity/Fibonacci-style effects should inform card value without
-				-- arbitrarily choosing the first of several equally supported ranks.
-				rank_scores[rank] = (rank_scores[rank] or 0) + 1
-			end
-			if effect.suit then suit_scores[effect.suit] = (suit_scores[effect.suit] or 0) + 8 end
-		end
-	end
-	local best_rank, best_rank_score = 13, -1
-	for rank = 2, 14 do
-		if (rank_scores[rank] or 0) > best_rank_score then
-			best_rank, best_rank_score = rank, rank_scores[rank] or 0
-		end
-	end
-	local best_suit, best_suit_score = "Hearts", -1
-	for _, suit in ipairs({ "Hearts", "Spades", "Clubs", "Diamonds" }) do
-		if (suit_scores[suit] or 0) > best_suit_score then
-			best_suit, best_suit_score = suit, suit_scores[suit] or 0
-		end
-	end
-	return best_rank, best_suit
-end
-
-local function joker_card_synergy(state, card)
-	local score = 0
-	for _, key in ipairs(state.jokers or {}) do
-		local effect = state.joker_effects and state.joker_effects[key]
-		if effect then
-			if effect.rank == card.rank then score = score + 8 end
-			for _, rank in ipairs(effect.ranks or {}) do
-				if rank == card.rank then score = score + 5; break end
-			end
-			if effect.suit == card.suit then score = score + 5 end
-		end
-	end
-	return score
-end
-
-local function deck_fix_score(state, card, rank, suit)
-	if not rank or not suit then rank, suit = deck_fix_preferences(state) end
-	local score = (card.rank or 0) * 0.1 + joker_card_synergy(state, card)
-	if card.rank == rank then score = score + 18 end
-	if card.suit == suit then score = score + 7 end
-	if card.rank == 13 then score = score + 2 end
-	if card.suit == "Hearts" then score = score + 1 end
-	if card.rank == 13 and card.suit == "Hearts" then score = score + 3 end
-	if card.enhancement then score = score + 8 end
-	if card.edition then score = score + (card.edition == "polychrome" and 12 or 7) end
-	if card.seal then score = score + (card.seal == "Red" and 10 or 5) end
-	return score
 end
 
 local function remove_card(deck, target)
@@ -340,9 +263,8 @@ local function note_joker_sold(state, key, replacing)
 	sold_joker_rules(state, key, replacing)
 end
 
--- Hook target_step: an external policy can override which cards a deck tool targets.
--- default_targets returns exactly the cards the old apply_deck_tool picked
--- among the hand-size draw `hand` (convert: { source, target }; duplicate: { source }).
+-- Hook target_step: an external policy can override which cards a Tarot or
+-- Spectral targets (ctx in bot/expert.lua).
 local function targeted_tool(tool)
 	local effect = tool.effect
 	if effect == "edition" then return tool.key ~= "c_wheel_of_fortune" end
@@ -350,128 +272,64 @@ local function targeted_tool(tool)
 		or effect == "seal" or effect == "convert" or effect == "duplicate"
 end
 
-local function next_rank(card) return card.rank == 14 and 2 or card.rank + 1 end
-
-local function default_targets(state, tool, hand, low, high, fix_score, preferred_rank)
-	local effect, cards = tool.effect, {}
-	if effect == "remove" then
-		for index = 1, math.min(tool.count or 2, #low - 1) do cards[#cards + 1] = low[index] end
-	elseif effect == "rank" then
-		local target_rank = preferred_rank
-		local candidates = ordered_cards(hand, false, function(card)
-			return (next_rank(card) == target_rank and 100 or 0) + fix_score(card)
-		end)
-		for index = 1, math.min(tool.count or 2, #candidates) do cards[#cards + 1] = candidates[index] end
-	elseif effect == "suit" then
-		local target = tool.suit or dominant_suit(state.deck)
-		local candidates = ordered_cards(hand, false, function(card)
-			return fix_score(card) + (card.suit ~= target and 20 or 0)
-		end)
-		for _, card in ipairs(candidates) do
-			if card.suit ~= target and #cards < (tool.count or 3) then cards[#cards + 1] = card end
-		end
-	elseif effect == "enhance" then
-		local eligible = {}
-		for _, card in ipairs(ordered_cards(hand, false, fix_score)) do
-			if not card.enhancement then eligible[#eligible + 1] = card end
-		end
-		for index = 1, math.min(tool.count or 2, #eligible) do cards[#cards + 1] = eligible[index] end
-	elseif effect == "convert" then
-		if high[1] and low[1] and high[1] ~= low[1] then cards = { high[1], low[1] } end
-	elseif effect == "duplicate" then
-		if high[1] then cards = { high[1] } end
-	elseif effect == "edition" or effect == "seal" then
-		for _, card in ipairs(high) do
-			if not card[effect] then cards = { card }; break end
-		end
-	end
-	return cards
-end
-
--- The Expert keeps the old picks: the default set is always ctx.actions[1].
-function Simulator.defaults.target_step()
+-- How many highlighted cards a targeted tool takes at most (card.lua
+-- can_use_consumeable, config max_highlighted). Death takes exactly 2; Aura,
+-- Cryptid and the seal Spectrals 1.
+local function target_limit(tool)
+	local effect = tool.effect
+	if effect == "rank" or effect == "remove" or effect == "enhance" then return tool.count or 2 end
+	if effect == "suit" then return tool.count or 3 end
 	return 1
 end
 
-local TARGET_SUITS = { "Spades", "Hearts", "Clubs", "Diamonds" }
-local MAX_TARGET_SETS = 8
-
--- Up to 8 candidate target sets among the drawn hand (low/high), deduplicated by
--- card set; the default first.
-local function target_actions(state, tool, default, low, high, preferred_rank, preferred_suit)
-	local actions, seen = {}, {}
-	local effect = tool.effect
-	local function add(cards)
-		if #cards == 0 or #actions >= MAX_TARGET_SETS then return end
-		local ids = {}
-		for index, card in ipairs(cards) do ids[index] = tostring(card.id) end
-		if effect ~= "convert" then table.sort(ids) end   -- convert: ordered source, target
-		local key = table.concat(ids, ",")
-		if seen[key] then return end
-		seen[key] = true
-		local action = { type = "target", cards = cards }
-		if effect == "convert" then action.source, action.target = cards[1], cards[2] end
-		actions[#actions + 1] = action
-	end
-	local function take(list, count, accept)
-		local cards = {}
-		for _, card in ipairs(list) do
-			if #cards >= count then break end
-			if accept(card) then cards[#cards + 1] = card end
-		end
-		return cards
-	end
-	add(default)
-	if effect == "suit" or effect == "enhance" or effect == "seal" or effect == "edition" or effect == "duplicate" then
-		local suit_target = tool.suit or dominant_suit(state.deck)
-		local count = effect == "suit" and (tool.count or 3) or (effect == "enhance" and (tool.count or 2) or 1)
-		local function eligible(card)
-			if effect == "suit" then return card.suit ~= suit_target end
-			if effect == "enhance" then return not card.enhancement end
-			if effect == "edition" then return not card.edition end
-			if effect == "seal" then return not card.seal end
-			return true
-		end
-		for _, suit in ipairs(TARGET_SUITS) do
-			add(take(high, count, function(card) return card.suit == suit and eligible(card) end))
-		end
-		add(take(high, count, function(card) return card.rank == preferred_rank and eligible(card) end))
-	elseif effect == "remove" then
-		local count = math.min(tool.count or 2, #low - 1)
-		for _, suit in ipairs(TARGET_SUITS) do
-			if suit ~= preferred_suit then add(take(low, count, function(card) return card.suit == suit end)) end
-		end
-		add(take(low, count, function(card) return not card.enhancement end))
-	elseif effect == "rank" then
-		local counts = {}
-		for _, card in ipairs(state.deck) do counts[card.rank] = (counts[card.rank] or 0) + 1 end
-		local ranks = {}
-		for rank in pairs(counts) do ranks[#ranks + 1] = rank end
-		table.sort(ranks, function(a, b)
-			if counts[a] == counts[b] then return a > b end
-			return counts[a] > counts[b]
-		end)
-		for index = 1, math.min(3, #ranks) do
-			local wanted = ranks[index]
-			add(take(high, tool.count or 2, function(card) return next_rank(card) == wanted end))
-		end
-	elseif effect == "convert" then
-		for index = 1, 4 do
-			if high[index] and low[1] and high[index] ~= low[1] then add({ high[index], low[1] }) end
-		end
-		for _, suit in ipairs(TARGET_SUITS) do
-			if low[1] and suit ~= low[1].suit then
-				local lowest = take(low, 1, function(card) return card.suit == suit end)[1]
-				if lowest and high[1] and lowest ~= high[1] then add({ high[1], lowest }) end
+-- Every legal target set among the drawn hand, in a fixed order (by size,
+-- then hand position). Death takes an ordered pair (the first card is copied
+-- onto the second), Aura a card without an edition.
+local function legal_target_sets(tool, hand)
+	local actions = {}
+	if tool.effect == "convert" then
+		for i, source in ipairs(hand) do
+			for j, target in ipairs(hand) do
+				if i ~= j then
+					actions[#actions + 1] = { type = "target", cards = { source, target }, source = source, target = target }
+				end
 			end
 		end
+		return actions
 	end
+	local eligible = {}
+	for _, card in ipairs(hand) do
+		if tool.effect ~= "edition" or not card.edition then eligible[#eligible + 1] = card end
+	end
+	local chosen = {}
+	local function extend(size, start)
+		if #chosen == size then
+			actions[#actions + 1] = { type = "target", cards = copy_array(chosen) }
+			return
+		end
+		for index = start, #eligible - (size - #chosen) + 1 do
+			chosen[#chosen + 1] = eligible[index]
+			extend(size, index + 1)
+			chosen[#chosen] = nil
+		end
+	end
+	for size = 1, math.min(target_limit(tool), #eligible) do extend(size, 1) end
 	return actions
 end
 
+-- `cards` holds exactly the cards of `set` (in any order).
+local function same_cards(cards, set)
+	if #cards ~= #set then return false end
+	local wanted = {}
+	for _, card in ipairs(set) do wanted[card] = true end
+	for _, card in ipairs(cards) do
+		if not wanted[card] then return false end
+		wanted[card] = nil
+	end
+	return true
+end
 
 -- the hand-size draw a deck tool picks its targets from
--- (moved out of apply_deck_tool unchanged, so target_step and tests share it).
 local function tool_hand(state, stream)
 	local hand_size = 8 + (state.hand_size_bonus or 0)
 	for _, key in ipairs(state.jokers or {}) do
@@ -486,38 +344,32 @@ local function tool_hand(state, stream)
 	return in_hand
 end
 
-local function apply_deck_tool(state, tool, stream, choose_targets)
-	local preferred_rank, preferred_suit = deck_fix_preferences(state)
-	if tool.effect == "rank" then
-		state.deck_fix_rank = state.deck_fix_rank or preferred_rank
-	elseif tool.effect == "suit" then
-		state.deck_fix_suit = state.deck_fix_suit or tool.suit or preferred_suit
-	elseif tool.effect == "remove" or tool.effect == "immolate"
-		or tool.effect == "convert" or tool.effect == "duplicate" then
-		state.deck_fix_rank = state.deck_fix_rank or preferred_rank
-		state.deck_fix_suit = state.deck_fix_suit or preferred_suit
-	end
-	local function fix_score(card) return deck_fix_score(state, card, preferred_rank, preferred_suit) end
+local function apply_deck_tool(state, tool, stream)
+	notify(state, "deck_tool", tool)
 	-- Tarots and Spectrals act on cards highlighted in hand
 	-- (card.lua Card:use_consumeable, can_use_consumeable), not on any card of the
 	-- deck: the targets are chosen among a hand-size draw of the deck.
-	local in_hand = tool_hand(state, stream)   -- moved into tool_hand
-	local low = ordered_cards(in_hand, true, fix_score)
-	local high = ordered_cards(in_hand, false, fix_score)
-	-- Hook target_step (see above). The targets are picked first (the old
-	-- picks unless a policy's target_step chooses another candidate set), then
-	-- applied with the same draws from `stream` (one per targeted card at most).
-	local targets
+	local in_hand = tool_hand(state, stream)
+	-- Hook target_step. The targets are picked first, then applied with the same
+	-- draws from `stream` (one per targeted card at most).
+	local targets = {}
 	if targeted_tool(tool) then
-		targets = default_targets(state, tool, in_hand, low, high, fix_score, preferred_rank)
-		local hook = choose_targets and #targets > 0 and state.Policy and state.Policy.target_step
-		if hook then
-			local ctx = { tool = tool, effect = tool.effect, default = targets, hand = in_hand }
-			ctx.actions = target_actions(state, tool, targets, low, high, preferred_rank, preferred_suit)
-			local index = decide(state, "target_step", ctx)
-			local action = ctx.actions[index]
+		local actions = legal_target_sets(tool, in_hand)
+		if #actions > 0 then
+			if compat(state).targetless_tools then actions[#actions + 1] = { type = "none", cards = {} } end
+			local ctx = { tool = tool, effect = tool.effect, hand = in_hand, actions = actions }
+			local index, meta = decide(state, "target_step", ctx, 1)
+			local action = actions[index]
 			if not action then error("target_step returned an invalid action index " .. tostring(index)) end
 			targets = action.cards
+			-- meta.cards: the same cards in the order they are applied (only the
+			-- ids of Strength and suit Tarots depend on it; Death's pair is ordered).
+			if meta and meta.cards and tool.effect ~= "convert" then
+				if not same_cards(meta.cards, targets) then
+					error("target_step returned cards that are not the chosen set's")
+				end
+				targets = meta.cards
+			end
 		end
 	end
 	if tool.effect == "remove" then
@@ -673,31 +525,6 @@ local function joker_slots(state, kinds)
 	return out
 end
 
-local economy_joker_kinds = {
-	played_hand_money = true,
-	deck_rank_money = true,
-	round_money = true,
-	discard_face_money = true,
-	scoring_face_money = true,
-	discard_rank_money = true,
-	scoring_enhancement_money = true,
-	scoring_suit_money = true,
-	held_face_money = true,
-	extra_interest = true,
-	single_discard_destroy = true,
-	unique_planet_money = true,   -- group C jokers
-}
-
--- group B jokers
-economy_joker_kinds.boss_scaling_money = true
-
-local function has_economy_joker(state)
-	for _, key in ipairs(state.jokers or {}) do
-		local effect = state.joker_effects and state.joker_effects[key]
-		if effect and economy_joker_kinds[effect.kind] then return true end
-	end
-	return false
-end
 
 -- how far money may go below $0 (-G.GAME.bankrupt_at).
 -- Each Credit Card lowers bankrupt_at by its extra when added and raises it
@@ -776,7 +603,7 @@ local function queued_tag_joker(state, reward, index)
 		for _, joker in ipairs(state.joker_pool or {}) do
 			if joker.key == generated.key then
 				return {
-					type = "joker", key = joker.key, cost = 0, utility = joker.utility,
+					type = "joker", key = joker.key, cost = 0,
 					tag_reward = reward.tag, edition = generated.edition,
 				}
 			end
@@ -796,7 +623,7 @@ local function queued_tag_joker(state, reward, index)
 	local stream = state.rng:fork("skip_tag:" .. state.ante .. ":" .. reward.tag .. ":" .. index)
 	local joker = eligible[stream:integer(1, #eligible)]
 	return {
-		type = "joker", key = joker.key, cost = 0, utility = joker.utility,
+		type = "joker", key = joker.key, cost = 0,
 		tag_reward = reward.tag, edition = reward.edition,
 	}
 end
@@ -851,34 +678,9 @@ local function joker_details(state, key)
 	for _, joker in ipairs(state.joker_pool or {}) do
 		if joker.key == key then return joker end
 	end
-	return { key = key, cost = 2, utility = 0 }
+	return { key = key, cost = 2 }
 end
 
-local function weakest_joker(state)
-	local weakest_index, weakest
-	for index, key in ipairs(state.jokers) do
-		-- A Negative Joker supplies its own slot. Selling it cannot create room
-		-- for a normal replacement, so it is not a capacity sacrifice candidate.
-		if not state.joker_editions or state.joker_editions[key] ~= "negative" then
-			local details = copy_map(joker_details(state, key))
-			if state.Strategy then details.utility = state.Strategy.joker_utility(state, details, state.strategy_plan) end
-			if not weakest or details.utility < weakest.utility
-				or (details.utility == weakest.utility and key < weakest.key) then
-				weakest_index, weakest = index, details
-			end
-		end
-	end
-	return weakest_index, weakest
-end
-
-local function worthwhile_replacement(offer, weakest)
-	if not offer or not weakest then return false end
-	local current = tonumber(weakest.utility) or 0
-	local improvement = (tonumber(offer.utility) or 0) - current
-	-- Raw catalog values omit the switching cost of selling a working build
-	-- piece. Require a material upgrade instead of a one- or two-point churn.
-	return improvement >= math.max(3, current * 0.1)
-end
 
 local function set_joker_edition(state, key, edition)
 	if not edition then return end
@@ -897,98 +699,6 @@ local function clear_joker(state, key)
 	if state.joker_counters then state.joker_counters[key] = nil end   -- group C jokers (Yorick)
 end
 
-local scaling_kinds = {
-	straight_scaling_chips = true,
-	four_card_scaling_chips = true,
-	bus_scaling_mult = true,
-	green_scaling_mult = true,
-	planet_scaling_xmult = true,
-	tarot_scaling_mult = true,
-	deck_add_scaling_xmult = true,
-	hand_scaling_mult = true,
-	rank_scaling_chips = true,
-	chance_hand_level = true,
-	played_card_chip_growth = true,
-	discard_suit_scaling_chips = true,
-	sacrifice_scaling_mult = true,
-	blind_scaling_xmult = true,
-	opponent_sale_mult = true,
-	avoid_most_played_xmult = true,
-	-- group C jokers
-	enhancement_steal_xmult = true,
-	discard_count_xmult = true,
-}
-
-local power_kinds = {
-	flat_xmult = true,
-	hand_xmult = true,
-	repeat_hand_xmult = true,
-	held_suit_xmult = true,
-	held_rank_xmult = true,
-	rarity_xmult = true,
-	scoring_suits_xmult = true,
-	mixed_suit_xmult = true,
-	chance_suit_xmult = true,
-	periodic_xmult = true,
-	retrigger_scoring = true,
-	first_scoring_retrigger = true,
-	rank_retrigger = true,
-	face_retrigger = true,
-	round_joker_generation = true,
-	round_tarot_generation = true,
-	held_retrigger = true,
-	rotating_suit_xmult = true,
-	blind_scaling_xmult = true,
-	avoid_most_played_xmult = true,
-	chance_xmult_money = true,
-	-- group C jokers
-	limited_retrigger = true,
-	rank_xmult = true,
-	skip_scaling_xmult = true,
-}
-
--- group B jokers
-scaling_kinds.lucky_scaling_xmult = true
-
-local function shop_priority(state, offer)
-	local value = offer.utility or 0
-	local missing = math.max(0, state.joker_limit - #state.jokers)
-	if offer.type == "joker" then
-		value = value + math.min(16, missing * 4)
-		local effect = state.joker_effects[offer.key]
-		-- Filling Stencil's final open slot removes half of its current XMult.
-		-- Price that opportunity cost into ordinary Joker offers so a mediocre
-		-- additive card cannot quietly turn x2 into x1. Negative Jokers and other
-		-- Stencils do not consume the protected slot.
-		if offer.edition ~= "negative" and (not effect or effect.kind ~= "empty_slot_xmult") then
-			local stencils = 0
-			for _, key in ipairs(state.jokers or {}) do
-				local owned = state.joker_effects[key]
-				if owned and owned.kind == "empty_slot_xmult" then stencils = stencils + 1 end
-			end
-			if stencils > 0 then
-				local factor = math.max(1, state.joker_limit - #state.jokers + stencils)
-				if factor > 1 then value = value - stencils * (40 / factor) end
-			end
-		end
-		if effect and scaling_kinds[effect.kind] then value = value + ((state.ante or 1) <= 3 and 7 or 3) end
-		if effect and power_kinds[effect.kind] then value = value + ((state.ante or 1) >= 2 and 6 or 3) end
-		if effect and effect.kind == "deck_add_scaling_xmult" and (state.cards_added or 0) == 0 then
-			-- Hologram is inert until another purchase adds cards. Do not value the
-			-- promise of scaling like established scaling when the bot cannot also
-			-- afford an enabler after buying it.
-			value = value - 14
-			if state.money - (offer.cost or 0) < 4 then value = value - 8 end
-		end
-	elseif offer.type == "pack" and offer.family == "buffoon" and missing > 0 then
-		value = value + math.min(12, missing * 3)
-	elseif missing >= 2 then
-		-- Consumables remain useful, but an incomplete scoring engine should not
-		-- repeatedly beat a viable Joker merely because pack utility is additive.
-		value = value - math.min(12, missing * 3)
-	end
-	return value
-end
 
 local function score_string(value)
 	if value < 1e15 then return string.format("%.0f", value) end
@@ -1012,21 +722,16 @@ local function cards_string(cards, limit)
 	return #out > 0 and table.concat(out, ",") or "none"
 end
 
-local function candidates_string(candidates)
-	local out = {}
-	for _, candidate in ipairs(candidates or {}) do
-		out[#out + 1] = table.concat({
-			tostring(candidate.type or "unknown"), tostring(candidate.key or ""),
-			string.format("%.3f", tonumber(candidate.utility) or 0),
-			tostring(candidate.hand or ""), tostring(candidate.score or ""),
-		}, "~")
+-- a log entry plus the fields its policy logged with the decision
+local function with_log(decision, log)
+	for name, field in pairs(log or {}) do
+		if decision[name] == nil then decision[name] = field end
 	end
-	return #out > 0 and table.concat(out, ";") or "none"
+	return decision
 end
 
 local function compact_snapshot(state, extra)
 	extra = extra or {}
-	local plan = state.strategy_plan or {}
 	local joker_state, joker_editions, levels = {}, {}, {}
 	for _, key in ipairs(state.jokers or {}) do
 		if state.joker_state and state.joker_state[key] ~= nil then
@@ -1062,7 +767,6 @@ local function compact_snapshot(state, extra)
 			for _, item in ipairs(state.consumables or {}) do held[#held + 1] = item.key end
 			return #held > 0 and table.concat(held, ",") or "none"
 		end)(),
-		"plan:" .. tostring(plan.primary_hand or "none") .. "/" .. tostring(plan.secondary_hand or "none"),
 	}, "|")
 end
 
@@ -1093,13 +797,8 @@ local function supported_pack_content(state, pack_key)
 end
 
 local function record_decision(state, decision)
-	local plan = state.strategy_plan
 	state.next_decision_id = (state.next_decision_id or 0) + 1
 	decision.decision_id = decision.decision_id or state.next_decision_id
-	decision.plan_primary = plan and plan.primary_hand
-	decision.plan_secondary = plan and plan.secondary_hand
-	decision.plan_confidence = plan and plan.confidence
-	decision.plan_exploring = plan and plan.exploring or false
 	decision.money = decision.money == nil and state.money or decision.money
 	decision.deck_size = #state.deck
 	decision.joker_count = #state.jokers
@@ -1115,31 +814,10 @@ local function record_decision(state, decision)
 	table.sort(scalers)
 	decision.scalers = #scalers > 0 and table.concat(scalers, ",") or "none"
 	decision.snapshot = decision.snapshot or compact_snapshot(state, decision)
+	notify(state, "decision", decision)   -- the policy may add its own fields
 	state.decisions[#state.decisions + 1] = decision
 end
 
-local function sell_unsupported_jokers(state)
-	local unsupported = state.content_catalog and state.content_catalog.unsupported
-		and state.content_catalog.unsupported.Joker
-	if type(unsupported) ~= "table" or #unsupported == 0 then return end
-	local unsupported_keys = {}
-	for _, key in ipairs(unsupported) do unsupported_keys[key] = true end
-	for index = #state.jokers, 1, -1 do
-		local key = state.jokers[index]
-		if unsupported_keys[key] then
-			local sell_value = joker_sell_value(state, key)
-			state.money = state.money + sell_value
-			note_card_sold(state, key)   -- Campfire
-			clear_joker(state, key)
-			table.remove(state.jokers, index)
-			record_decision(state, {
-				type = "sell_joker", key = key, value = sell_value,
-				reason = "unsupported", source = "shop",
-				ante = state.ante, round = state.current_round or state.round,
-			})
-		end
-	end
-end
 
 local function expire_owned_jokers(state, effect_kind)
 	for index = #state.jokers, 1, -1 do
@@ -1315,210 +993,89 @@ local function joker_context(state, cards, hands_left, discards_left, full_hand)
 	}
 end
 
-local xmult_effects = {
-	first_face_xmult = true,
-	last_hand_xmult = true,
-	repeat_hand_xmult = true,
-	held_suit_xmult = true,
-	discard_decay_xmult = true,
-	planet_scaling_xmult = true,
-	deck_add_scaling_xmult = true,
-	rarity_xmult = true,
-	hand_xmult = true,
-	enhancement_count_xmult = true,
-	flat_xmult = true,
-	held_rank_xmult = true,
-	empty_slot_xmult = true,
-	enhanced_threshold_xmult = true,
-	scoring_suits_xmult = true,
-	mixed_suit_xmult = true,
-	chance_suit_xmult = true,
-	periodic_xmult = true,
-	non_pvp_xmult = true,
-	retrigger_scoring = true,
-	rank_retrigger = true,
-	face_retrigger = true,
-	rotating_suit_xmult = true,
-	blind_scaling_xmult = true,
-	avoid_most_played_xmult = true,
-	chance_xmult_money = true,
-	-- group C jokers
-	limited_retrigger = true,
-	rank_xmult = true,
-	skip_scaling_xmult = true,
-	enhancement_steal_xmult = true,
-	discard_count_xmult = true,
-}
-
--- group B jokers
-xmult_effects.discard_rank_xmult = true
-xmult_effects.rotating_card_xmult = true
-xmult_effects.lucky_scaling_xmult = true
-
 local function same_order(left, right)
 	if #(left or {}) ~= #(right or {}) then return false end
 	for index, key in ipairs(left or {}) do if key ~= right[index] then return false end end
 	return true
 end
 
-local function ordinary_joker_order(state)
-	local indexed = {}
-	for index, key in ipairs(state.jokers or {}) do indexed[#indexed + 1] = { key = key, index = index } end
-	table.sort(indexed, function(left, right)
-		local left_effect = state.joker_effects[left.key]
-		local right_effect = state.joker_effects[right.key]
-		local left_x = left_effect and xmult_effects[left_effect.kind] or false
-		local right_x = right_effect and xmult_effects[right_effect.kind] or false
-		local left_poly = (state.joker_editions or {})[left.key] == "polychrome"
-		local right_poly = (state.joker_editions or {})[right.key] == "polychrome"
-		local left_phase = left_x and 3 or (left_poly and 2 or 1)
-		local right_phase = right_x and 3 or (right_poly and 2 or 1)
-		if left_phase == right_phase then return left.index < right.index end
-		return left_phase < right_phase
-	end)
-	local result = {}
-	for _, entry in ipairs(indexed) do result[#result + 1] = entry.key end
-	return result
-end
-
-local function normalize_joker_order(state, source)
-	for _, key in ipairs(state.jokers or {}) do
-		local effect = state.joker_effects[key]
-		if effect and effect.kind == "copy_joker" then return false end
+-- An order a hook returns must be a permutation of the owned Jokers.
+local function check_joker_order(state, order, hook)
+	local counts = {}
+	for _, key in ipairs(state.jokers) do counts[key] = (counts[key] or 0) + 1 end
+	local valid = type(order) == "table" and #order == #state.jokers
+	for _, key in ipairs(valid and order or {}) do
+		if not counts[key] or counts[key] == 0 then valid = false; break end
+		counts[key] = counts[key] - 1
 	end
-	local previous = copy_array(state.jokers)
-	local ordered = ordinary_joker_order(state)
-	if same_order(previous, ordered) then return false end
-	state.jokers = ordered
-	record_decision(state, {
-		type = "reorder_jokers", from = table.concat(previous, ","),
-		to = table.concat(ordered, ","), source = source,
-		ante = state.ante, round = state.current_round or state.round,
-	})
-	return true
+	if not valid then error(hook .. " returned an order that is not a permutation of the Jokers") end
 end
 
-local function optimize_joker_order(state, cards, context, resolved_order_cache)
-	local current = copy_array(state.jokers)
+-- Scores `cards` with exactly `order`. A Blueprint/Brainstorm layout's copies
+-- are resolved once per order and turn (`resolved_order_cache`).
+local function order_evaluator(state, cards, context, resolved_order_cache)
 	local has_copy = false
-	for _, key in ipairs(current) do
+	for _, key in ipairs(state.jokers) do
 		local effect = state.joker_effects[key]
 		if effect and effect.kind == "copy_joker" then has_copy = true; break end
 	end
-	local function evaluate(order, order_cache)
-		if has_copy and order_cache then
+	return function(order)
+		if has_copy then
 			local cache_key = table.concat(order, "\0")
-			local resolved = order_cache[cache_key]
+			local resolved = resolved_order_cache[cache_key]
 			if not resolved then
 				resolved = state.Evaluator.resolve_jokers(order, state.joker_effects)
-				order_cache[cache_key] = resolved
+				resolved_order_cache[cache_key] = resolved
 			end
 			context.resolved_jokers = resolved
-		elseif has_copy then
-			context.resolved_jokers = nil   -- never a stale layout's resolution
 		end
 		return state.Evaluator.evaluate(cards, state.levels, order, context)
 	end
-	local best_order = current
-	local best_result = evaluate(current, resolved_order_cache)
+end
 
-	if has_copy and #current <= 8 and not state.exact_joker_order then
-		-- Speed: the exhaustive search below costs 120
-		-- evaluations per scored play with 5 Jokers (720 with 6, 5040 with 7) and
-		-- made Expert games with an early Blueprint/Brainstorm 10-30x slower once
-		-- the shop offers Buffoon Packs and Rares at the game's rates. What the
-		-- layout really decides is which Joker each copy copies (the one to its
-		-- right for Blueprint, the leftmost for Brainstorm) and that additive
-		-- effects come before xMult ones. So: the other Jokers in the usual
-		-- additive -> Polychrome -> xMult order, any one of them moved to the
-		-- front, and every copy Joker tried at every position (20 layouts for 5
-		-- Jokers). `exact_joker_order` keeps the exhaustive search.
-		local copies, others = {}, {}
-		local position = {}
-		for index, key in ipairs(current) do
-			position[key] = index
-			local effect = state.joker_effects[key]
-			if effect and effect.kind == "copy_joker" then copies[#copies + 1] = key else others[#others + 1] = key end
-		end
-		local editions = state.joker_editions or {}
-		local function phase(key)
-			local effect = state.joker_effects[key]
-			if effect and xmult_effects[effect.kind] then return 3 end
-			return editions[key] == "polychrome" and 2 or 1
-		end
-		table.sort(others, function(left, right)
-			local lp, rp = phase(left), phase(right)
-			if lp == rp then return position[left] < position[right] end
-			return lp < rp
-		end)
-		local tried = { [table.concat(current, ",")] = true }
-		local function try(order)
-			local signature = table.concat(order, ",")
-			if tried[signature] then return end
-			tried[signature] = true
-			local result = evaluate(order, resolved_order_cache)
-			if result.score > best_result.score then best_order, best_result = copy_array(order), result end
-		end
-		local function place(order, index)
-			if index > #copies then try(order); return end
-			for slot = 1, #order + 1 do
-				local next_order = copy_array(order)
-				table.insert(next_order, slot, copies[index])
-				place(next_order, index + 1)
-			end
-		end
-		for front = 0, #others do
-			local base = copy_array(others)
-			if front > 0 then table.insert(base, 1, table.remove(base, front)) end
-			place(base, 1)
-		end
-		-- Then improve the best layout by moving one Joker at a time until no
-		-- move helps (catches Editions, Baseball Card and copied xMult details).
-		for round = 1, 6 do
-			-- (the first pass explores around the current layout, the rest around the best)
-			local start = round == 1 and current or best_order
-			for from = 1, #start do
-				for to = 1, #start do
-					if to ~= from then
-						local moved = copy_array(start)
-						table.insert(moved, to, table.remove(moved, from))
-						try(moved)
-					end
-				end
-			end
-			if round > 1 and best_order == start then break end
-		end
-	elseif has_copy and #current <= 7 then
-		-- Copy Jokers make adjacency and the leftmost slot part of the scoring
-		-- decision. Normal runs have at most five slots, so an exhaustive search is
-		-- both exact and small (120 layouts); seven slots is still a safe ceiling.
-		local used, order = {}, {}
-		local function visit(depth)
-			if depth > #current then
-				local result = evaluate(order, resolved_order_cache)
-				if result.score > best_result.score then
-					best_order, best_result = copy_array(order), result
-				end
-				return
-			end
-			for index, key in ipairs(current) do
-				if not used[index] then
-					used[index] = true
-					order[depth] = key
-					visit(depth + 1)
-					used[index] = nil
-				end
-			end
-		end
-		visit(1)
-	else
-		local ordered = ordinary_joker_order(state)
-		local result = evaluate(ordered, resolved_order_cache)
-		if result.score > best_result.score then best_order, best_result = ordered, result end
+-- Hook joker_order: the Joker layout a candidate play is scored with (arranging
+-- Jokers is a free player action). A result the hook returns must come from
+-- ctx.evaluate_order with that order; otherwise the simulator scores it.
+local function scored_play(state, cards, context, resolved_order_cache, full_hand)
+	local evaluate_order = order_evaluator(state, cards, context, resolved_order_cache)
+	local ctx = { cards = cards, full_hand = full_hand, context = context, evaluate_order = evaluate_order }
+	local hook = state.Policy.joker_order
+	if not hook then   -- no decision: the current order
+		local result = evaluate_order(state.jokers)
+		result.joker_order = copy_array(state.jokers)
+		return result
 	end
+	local produced = {}
+	ctx.evaluate_order = function(candidate)
+		local scored = evaluate_order(candidate)
+		produced[scored] = copy_array(candidate)
+		return scored
+	end
+	local order, result = hook(state, ctx)
+	order = order or state.jokers
+	check_joker_order(state, order, "joker_order")
+	if not result or not produced[result] or not same_order(produced[result], order) then
+		result = evaluate_order(order)
+	end
+	result.joker_order = copy_array(order)
+	return result
+end
 
-	best_result.joker_order = copy_array(best_order)
-	return best_order, best_result
+-- Hook arrange_jokers: a free rearrangement of the Jokers (leaving a shop,
+-- starting a Blind).
+local function arrange_jokers(state, source)
+	local order = decide(state, "arrange_jokers", { source = source, jokers = copy_array(state.jokers) })
+	if order == nil then return false end
+	check_joker_order(state, order, "arrange_jokers")
+	if same_order(state.jokers, order) then return false end
+	local previous = state.jokers
+	state.jokers = copy_array(order)
+	record_decision(state, {
+		type = "reorder_jokers", from = table.concat(previous, ","),
+		to = table.concat(state.jokers, ","), source = source,
+		ante = state.ante, round = state.current_round or state.round,
+	})
+	return true
 end
 
 local function generate_tarot(state, source, label)
@@ -1550,8 +1107,6 @@ local function generate_hand_planet(state, hand, source)
 		if planet.hand == hand then
 			state.consumables[#state.consumables + 1] = {
 				type = "planet", key = planet.key, hand = hand, cost = planet.cost,
-				utility = state.Strategy and state.Strategy.planet_utility(state, hand, state.strategy_plan)
-					or planet.utility or 10,
 			}
 			record_decision(state, {
 				type = "create_consumable", key = planet.key, source = source,
@@ -1638,26 +1193,9 @@ sold_joker_rules = function(state, key, replacing)
 	end
 end
 
--- The sell action of a ready Invisible Joker with another Joker to copy (the
--- Expert sells it as soon as it can).
-local function ready_invisible_action(state, actions)
-	if #state.jokers < 2 or #state.jokers > state.joker_limit then return nil end
-	for position, action in ipairs(actions) do
-		local effect = action.type == "sell_joker" and state.joker_effects[action.key]
-		if effect and effect.kind == "sell_duplicate_joker"
-			and (tonumber(state.joker_state[action.key]) or 0) >= (effect.rounds or 2) then
-			return position
-		end
-	end
-	return nil
-end
-
 -- Hook boss_disable_step: whether to sell Luchador once the Boss Blind is set.
--- ctx.actions = { keep, sell_joker }. The Expert sells it against any Boss
--- whose ability the simulator applies.
-function Simulator.defaults.boss_disable_step(_, ctx)
-	return simulated_boss_abilities[ctx.boss] and 2 or 1
-end
+-- ctx = { boss, simulated (the simulator applies this Boss's ability),
+-- actions = { keep, sell_joker } }.
 
 local function offer_boss_disable(state)
 	if not state.boss_blind then return end
@@ -1672,7 +1210,9 @@ local function offer_boss_disable(state)
 		{ type = "keep" },
 		{ type = "sell_joker", index = slot, key = key, value = joker_sell_value(state, key) },
 	}
-	local index = decide(state, "boss_disable_step", { boss = state.boss_blind, actions = actions })
+	local index = decide(state, "boss_disable_step", {
+		boss = state.boss_blind, simulated = simulated_boss_abilities[state.boss_blind] == true, actions = actions,
+	}, 1)
 	local action = actions[index]
 	if not action then error("boss_disable_step returned an invalid action index " .. tostring(index)) end
 	if action.type ~= "sell_joker" then return end
@@ -2071,47 +1611,6 @@ local function update_discard_jokers(state, discarded)
 	end
 end
 
-local function joker_strategy(state)
-	local strategy = { hand_growth = {}, rank_growth = {}, hand_money = {}, plan = state.strategy_plan }
-	for _, key in ipairs(state.jokers) do
-		local effect = state.joker_effects[key]
-		if effect then
-			if effect.kind == "green_scaling_mult" then
-				strategy.preserve_green = true
-				local current = math.max(0, state.joker_state[key] or 0)
-				strategy.discard_score_loss_fraction = (strategy.discard_score_loss_fraction or 0)
-					+ (effect.discard_sub or 1) / math.max(4, current + 4)
-			elseif effect.kind == "discard_decay_xmult" then
-				strategy.discard_card_cost = (strategy.discard_card_cost or 0) + 45
-				-- Ramen can justify a redraw, but repeatedly rerolling the same hand
-				-- burns permanent XMult far faster than the replacement draw repays it.
-				strategy.discard_per_hand_budget = 1
-				local current = math.max(1, state.joker_state[key] or effect.initial or 1)
-				strategy.discard_score_loss_fraction = (strategy.discard_score_loss_fraction or 0)
-					+ (effect.amount or 0) / current
-			elseif effect.kind == "discard_chips" then
-				strategy.discard_card_cost = (strategy.discard_card_cost or 0) + 8
-			elseif effect.kind == "straight_scaling_chips" then
-				strategy.runner_growth = (strategy.runner_growth or 0) + effect.amount
-			elseif effect.kind == "four_card_scaling_chips" then
-				strategy.four_card_growth = (strategy.four_card_growth or 0) + effect.amount
-			elseif effect.kind == "bus_scaling_mult" then
-				strategy.bus_value = (strategy.bus_value or 0) + (state.joker_state[key] or 0)
-				strategy.bus_growth = (strategy.bus_growth or 0) + (effect.amount or 1)
-			elseif effect.kind == "hand_scaling_mult" then
-				strategy.hand_growth[effect.hand] = (strategy.hand_growth[effect.hand] or 0) + effect.amount
-			elseif effect.kind == "rank_scaling_chips" then
-				strategy.rank_growth[effect.rank] = (strategy.rank_growth[effect.rank] or 0) + effect.amount
-			elseif effect.kind == "played_hand_money" and type(state.joker_state[key]) == "string" then
-				local hand = state.joker_state[key]
-				strategy.hand_money[hand] = (strategy.hand_money[hand] or 0) + effect.amount
-			elseif effect.kind == "first_six_spectral" and next(state.round_hand_usage or {}) == nil then
-				strategy.first_six_spectral = true
-			end
-		end
-	end
-	return strategy
-end
 
 local function prepare_round_jokers(state, round_name)
 	local generators, tarot_generators = 0, 0
@@ -2436,77 +1935,11 @@ local function spectral_usable(state, consumable)
 	return nil
 end
 
--- share of the vanilla Jokers of `rarity` the run simulates (the rest give
--- nothing, see roll_vanilla_joker).
-local function joker_rarity_share(state, rarity)
-	local supported = 0
-	for _, joker in ipairs(state.joker_pool or {}) do
-		if inferred_rarity(joker) == rarity and not state.banned[joker.key] then supported = supported + 1 end
-	end
-	local total = math.max(supported, vanilla_jokers_by_rarity[rarity] or 0)
-	return total > 0 and supported / total or 0
-end
-
--- Spectral value adjusted for what using it costs right now: Jokers the card
--- destroys, money Wraith takes, Ectoplasm's growing hand size loss. A card
--- that cannot be used is worth nothing but its sale.
-local function spectral_offer_utility(state, offer)
-	local utility = offer.utility or 0
-	local usable = spectral_usable(state, offer)
-	if usable == false then return 0 end
-	local jokers = #(state.jokers or {})
-	if offer.effect == "generate_joker" and offer.rarity then
-		utility = utility * joker_rarity_share(state, offer.rarity)
-		if offer.clear_money then utility = utility - math.max(0, state.money or 0) * 0.5 end
-	elseif offer.effect == "duplicate_joker" or offer.effect == "polychrome_joker" then
-		utility = utility - (jokers - 1) * 17
-	elseif offer.effect == "negative_joker" then
-		utility = utility - ((state.ecto_minus or 1) - 1) * 12
-	elseif offer.effect == "hand_rank" then
-		utility = utility - math.max(0, 8 - current_hand_size(state)) * 4
-	end
-	return math.max(0, utility)
-end
-
-local function deck_tool_offer(state, tool)
+-- a deck tool as a shop or pack offer
+local function tool_offer(tool)
 	local offer = copy_map(tool)
-	if state.Strategy then offer.utility = state.Strategy.deck_tool_utility(state, offer, state.strategy_plan) end
-	if offer.effect == "repeat_consumable" then
-		local last = state.last_consumable
-		if not last then
-			offer.utility = 0
-		elseif last.type == "planet" then
-			offer.utility = state.Strategy and state.Strategy.planet_utility(
-				state, last.hand, state.strategy_plan
-			) or last.utility or 10
-		else
-			offer.utility = state.Strategy and state.Strategy.deck_tool_utility(
-				state, last, state.strategy_plan
-			) or last.utility or 0
-		end
-	end
-	if offer.set == "Spectral" and spectral_usable(state, offer) ~= nil then
-		offer.utility = spectral_offer_utility(state, offer)
-	end
-	if offer.effect == "add" then
-		offer.utility = offer.utility + (has_value(state.jokers, "j_hologram") and 12 or 0)
-			+ (#state.deck < state.starting_deck_size - 5 and 6 or 0)
-			- math.max(0, #state.deck - state.starting_deck_size) * 2
-	end
 	offer.type = "deck_tool"
 	return offer
-end
-
-local function consumable_utility(state, consumable)
-	if consumable.type == "planet" then
-		return (state.Strategy and state.Strategy.planet_utility(
-			state, consumable.hand, state.strategy_plan
-		) or consumable.utility or 10) * weight(state, "consumable_value")
-	end
-	if consumable.type == "deck_tool" then
-		return (deck_tool_offer(state, consumable).utility or 0) * weight(state, "consumable_value")
-	end
-	return (consumable.utility or 0) * weight(state, "consumable_value")
 end
 
 local function consumable_sell_value(consumable)
@@ -2519,28 +1952,6 @@ local function consumable_available(state, key)
 		if consumable.key == key then return false end
 	end
 	return true
-end
-
-local function weakest_consumable(state)
-	local weakest_index, weakest, weakest_value
-	for index, consumable in ipairs(state.consumables or {}) do
-		local value = consumable_utility(state, consumable)
-		if weakest_value == nil or value < weakest_value
-			or (value == weakest_value and tostring(consumable.key) < tostring(weakest.key)) then
-			weakest_index, weakest, weakest_value = index, consumable, value
-		end
-	end
-	return weakest_index, weakest, weakest_value
-end
-
-local function consumable_room(state, incoming)
-	if #(state.consumables or {}) < (state.consumable_limit or 2) then return true end
-	local index, weakest, weakest_value = weakest_consumable(state)
-	local incoming_value = consumable_utility(state, incoming)
-	if weakest and incoming_value >= (weakest_value or 0) + 3 then
-		return true, index, weakest, consumable_sell_value(weakest)
-	end
-	return false
 end
 
 local install_joker
@@ -2581,7 +1992,6 @@ end
 
 local apply_consumable
 apply_consumable = function(state, consumable, source)
-	local modeled_utility = consumable_utility(state, consumable)
 	remember_consumable(state, consumable)
 	if consumable.type == "planet" then
 		state.levels[consumable.hand] = (state.levels[consumable.hand] or 1) + 1
@@ -2600,27 +2010,46 @@ apply_consumable = function(state, consumable, source)
 					and tool.effect ~= "generate_tarot" and tool.effect ~= "generate_planet"
 					and tool.effect ~= "generate_joker" then eligible[#eligible + 1] = tool end
 			end
-			-- The Emperor / High Priestess create at most as many
-			-- cards as there are free consumable slots (card.lua use_consumeable).
+			-- The Emperor / High Priestess create at most as many cards as there
+			-- are free consumable slots, into those slots (card.lua use_consumeable).
 			local room = math.max(0, (state.consumable_limit or 2) - #(state.consumables or {}))
 			for index = 1, math.min(consumable.count or 2, #eligible, room) do
 				local picked = table.remove(eligible, stream:integer(1, #eligible))
-				apply_deck_tool(state, picked, stream:fork("tarot:" .. index))
-				remember_consumable(state, { type = "deck_tool", key = picked.key, set = picked.set,
-					effect = picked.effect, utility = picked.utility })
-				state.tarots_used = state.tarots_used + 1
+				if compat(state).use_created_cards then
+					apply_deck_tool(state, picked, stream:fork("tarot:" .. index))
+					remember_consumable(state, { type = "deck_tool", key = picked.key, set = picked.set,
+						effect = picked.effect })
+					state.tarots_used = state.tarots_used + 1
+				else
+					local created = copy_map(picked)
+					created.type = "deck_tool"
+					state.consumables[#state.consumables + 1] = created
+					record_decision(state, {
+						type = "create_consumable", key = created.key, source = consumable.key,
+						ante = state.ante, round = state.current_round or state.round,
+					})
+				end
 			end
 		elseif consumable.effect == "generate_planet" then
 			local eligible = copy_array(state.planet_pool or {})
 			local room = math.max(0, (state.consumable_limit or 2) - #(state.consumables or {}))
 			for _ = 1, math.min(consumable.count or 2, #eligible, room) do
 				local picked = table.remove(eligible, stream:integer(1, #eligible))
-				state.levels[picked.hand] = (state.levels[picked.hand] or 1) + 1
-				remember_consumable(state, { type = "planet", key = picked.key, hand = picked.hand,
-					utility = picked.utility })
-				state.planets_used = state.planets_used + 1
-				adjust_owned_jokers(state, "planet_scaling_xmult", 1)
-				note_planet_used(state, picked.key)
+				if compat(state).use_created_cards then
+					state.levels[picked.hand] = (state.levels[picked.hand] or 1) + 1
+					remember_consumable(state, { type = "planet", key = picked.key, hand = picked.hand })
+					state.planets_used = state.planets_used + 1
+					adjust_owned_jokers(state, "planet_scaling_xmult", 1)
+					note_planet_used(state, picked.key)
+				else
+					state.consumables[#state.consumables + 1] = {
+						type = "planet", key = picked.key, hand = picked.hand, cost = picked.cost,
+					}
+					record_decision(state, {
+						type = "create_consumable", key = picked.key, source = consumable.key,
+						ante = state.ante, round = state.current_round or state.round,
+					})
+				end
 			end
 		elseif consumable.effect == "generate_joker" then
 			-- Judgement makes a Joker like the shop does
@@ -2634,10 +2063,7 @@ apply_consumable = function(state, consumable, source)
 						local picked = copy_map(joker)
 						picked.cost = 0
 						picked.edition = edition
-						picked.utility = state.Strategy and state.Strategy.joker_utility(
-							state, picked, state.strategy_plan
-						) or picked.utility
-						install_joker(state, picked, full_control(state))   -- strict
+						install_joker(state, picked)
 						break
 					end
 				end
@@ -2673,7 +2099,7 @@ apply_consumable = function(state, consumable, source)
 			local repeated = state.last_consumable
 			if not repeated or not apply_consumable(state, copy_map(repeated), "fool") then return false end
 		else
-			apply_deck_tool(state, consumable, stream, true)   -- target_step
+			apply_deck_tool(state, consumable, stream)   -- target_step
 		end
 		if consumable.set == "Tarot" then state.tarots_used = state.tarots_used + 1 end
 	else
@@ -2682,50 +2108,24 @@ apply_consumable = function(state, consumable, source)
 	state.consumables_used = state.consumables_used + 1
 	record_decision(state, {
 		type = "use_consumable", key = consumable.key, source = source,
-		chosen = "use:" .. tostring(consumable.key), chosen_utility = modeled_utility,
-		best_utility = modeled_utility, regret = 0,
+		chosen = "use:" .. tostring(consumable.key),
 		ante = state.ante, round = state.current_round or state.round,
 	})
 	return true
 end
 
-local function money_consumable_gain(state, consumable)
-	if consumable.sell_value then
-		local gain = 0
-		for _, key in ipairs(state.jokers or {}) do
-			gain = gain + joker_sell_value(state, key)
-		end
-		return math.min(consumable.cap or gain, gain)
-	end
-	local gain = math.max(0, state.money) * (consumable.multiplier or 1)
-	return math.min(consumable.cap or gain, gain)
-end
-
-local function should_use_consumable(state, consumable, source)
-	if consumable.type == "planet" then return true end
-	if consumable.type ~= "deck_tool" then return false end
-	if consumable.effect == "money" then
-		local gain = money_consumable_gain(state, consumable)
-		local target = consumable.sell_value and 10 or math.min(consumable.cap or 20, 16)
-		return gain >= target
-			or (source == "shop_start" and gain >= 10)
-			or (source == "make_room" and gain >= math.max(4, target * 0.5))
-	end
-	return state.strategy_open and consumable_utility(state, consumable) >= 10
-end
-
--- Hook consumable_step: an external policy can override when held consumables
--- are used or sold. Whether a held consumable can be
--- used right now under the simulator's (deck-wide) rules.
+-- Hook consumable_step: when held consumables are used or sold. Whether a
+-- held consumable can be used right now under the simulator's (deck-wide)
+-- rules (card.lua can_use_consumeable).
 local function consumable_usable(state, consumable)
 	if consumable.type == "planet" then return true end
 	if consumable.type ~= "deck_tool" then return false end
 	if consumable.effect == "repeat_consumable" then return state.last_consumable ~= nil end
 	local spectral_rule = spectral_usable(state, consumable)
 	if spectral_rule ~= nil then return spectral_rule end
-	if consumable.effect == "generate_joker" and full_control(state) then
-		-- Real Judgement rule: needs a free Joker slot.
-		return #state.jokers < state.joker_limit
+	if consumable.effect == "generate_joker" then
+		-- Judgement needs a free Joker slot
+		return #state.jokers < state.joker_limit or compat(state).judgement_without_slot == true
 	end
 	return true
 end
@@ -2735,13 +2135,12 @@ local function consumable_actions(state, actions)
 	actions = actions or { { type = "done" } }
 	for index, consumable in ipairs(state.consumables) do
 		if consumable_usable(state, consumable) then
-			actions[#actions + 1] = { type = "use", index = index, key = consumable.key,
-				utility = consumable_utility(state, consumable) }
+			actions[#actions + 1] = { type = "use", index = index, key = consumable.key }
 		end
 	end
 	for index, consumable in ipairs(state.consumables) do
 		actions[#actions + 1] = { type = "sell_consumable", index = index, key = consumable.key,
-			value = consumable_sell_value(consumable), utility = consumable_utility(state, consumable) }
+			value = consumable_sell_value(consumable) }
 	end
 	return actions
 end
@@ -2751,27 +2150,6 @@ local function find_action(actions, kind, index)
 		if action.type == kind and action.index == index then return position end
 	end
 	return nil
-end
-
--- The old use_held_consumables loop, one use per call: scan downward from the
--- cursor and use the first consumable should_use_consumable accepts.
-local function default_consumable_use(state, actions, session, source)
-	local cursor = math.min(session.cursor or 0, #state.consumables)
-	for index = cursor, 1, -1 do
-		if should_use_consumable(state, state.consumables[index], source) then
-			local position = find_action(actions, "use", index)
-			if position then
-				session.cursor = index - 1
-				return position
-			end
-		end
-	end
-	session.cursor = 0
-	return nil
-end
-
-function Simulator.defaults.consumable_step(state, ctx)
-	return default_consumable_use(state, ctx.actions, ctx.session, ctx.source) or 1
 end
 
 local function sell_consumable(state, index, source)
@@ -2801,12 +2179,12 @@ end
 -- "blind_start" and "cartomancer".
 local function consumable_phase(state, source)
 	if #state.consumables == 0 then return end
-	local session = { cursor = #state.consumables }
+	local session = {}
 	for _ = 1, 2 * #state.consumables + 1 do
 		if #state.consumables == 0 then break end   -- nothing left to decide
 		local ctx = { source = source, session = session, consumables = state.consumables,
 			actions = consumable_actions(state) }
-		local index = decide(state, "consumable_step", ctx)
+		local index = decide(state, "consumable_step", ctx, 1)
 		local action = ctx.actions[index]
 		if not action then error("consumable_step returned an invalid action index " .. tostring(index)) end
 		if action.type == "done" then break end
@@ -2824,6 +2202,25 @@ local function shop_stream(state, label)
 		return state.rng:fork("ordered_shop:" .. state.shop_index .. ":" .. label)
 	end
 	return state.rng:fork("shop:" .. state.ante .. ":" .. state.round .. ":" .. label)
+end
+
+-- The shop's next purchase-decision stream, for whichever policy decides
+-- (without advancing anything). Under The Order the shop counter also numbers
+-- these decision draws; the simulator advances it when the decision is carried
+-- out (count_shop_decision), so shop generation depends only on what was done
+-- in the shop, never on which policy's code ran.
+local function decision_stream(state, label)
+	if state.the_order then
+		return state.rng:fork("ordered_shop:" .. (state.shop_index + 1) .. ":" .. label)
+	end
+	return state.rng:fork("shop:" .. state.ante .. ":" .. state.round .. ":" .. label)
+end
+
+-- MultiBots' shop decision draws: one per purchase (except a free Negative
+-- Joker, which is taken without a draw) and one for leaving a shop that still
+-- has offers after fewer than 4 purchases.
+local function count_shop_decision(state)
+	if state.the_order then state.shop_index = state.shop_index + 1 end
 end
 
 local pack_offer
@@ -2848,7 +2245,6 @@ local function offer_for_key(state, key, instance)
 		if joker.key == key and not state.banned[key] and joker_available(state, key) then
 			return {
 				type = "joker", key = key, cost = joker.cost,
-				utility = state.Strategy and state.Strategy.joker_utility(state, joker, state.strategy_plan) or joker.utility,
 			}
 		end
 	end
@@ -2857,8 +2253,6 @@ local function offer_for_key(state, key, instance)
 			local hand = planet.hand
 			return {
 				type = "planet", key = key, hand = hand, cost = planet.cost,
-				utility = state.Strategy and state.Strategy.planet_utility(state, hand, state.strategy_plan)
-					or 10 + (state.hand_usage[hand] or 0) * 4 + (state.levels[hand] or 1),
 			}
 		end
 	end
@@ -2867,16 +2261,13 @@ local function offer_for_key(state, key, instance)
 	if pack_spec(key) then return pack_offer and pack_offer(state, key, instance) or nil end
 	for _, tool in ipairs(state.deck_tools or {}) do
 		if tool.key == key and consumable_available(state, key) then
-			return deck_tool_offer(state, tool)
+			return tool_offer(tool)
 		end
 	end
 	for _, voucher in ipairs(state.voucher_pool or {}) do
 		if voucher.key == key and not has_value(state.vouchers, key) then
 			local offer = copy_map(voucher)
 			offer.type = "voucher"
-			if offer.effect == "planet_rate" and has_joker_kind(state, "planet_scaling_xmult") then
-				offer.utility = (offer.utility or 0) + 10
-			end
 			return offer
 		end
 	end
@@ -2924,12 +2315,12 @@ end
 
 local function random_joker(pool, stream)
 	-- Legendary Jokers never appear in a shop (only The Soul creates them).
-	local rarity_weights = { [1] = 0.70, [2] = 0.25, [3] = 0.05, [4] = 0 }
+	local rarity_rates = { [1] = 0.70, [2] = 0.25, [3] = 0.05, [4] = 0 }
 	local total = 0
-	for _, joker in ipairs(pool) do total = total + (rarity_weights[inferred_rarity(joker)] or 0.05) end
+	for _, joker in ipairs(pool) do total = total + (rarity_rates[inferred_rarity(joker)] or 0.05) end
 	local roll = stream:next() * total
 	for _, joker in ipairs(pool) do
-		roll = roll - (rarity_weights[inferred_rarity(joker)] or 0.05)
+		roll = roll - (rarity_rates[inferred_rarity(joker)] or 0.05)
 		if roll <= 0 then return joker end
 	end
 	return pool[#pool]
@@ -2945,40 +2336,6 @@ local function sample_unique(pool, count, stream)
 	return result
 end
 
-local enhancement_value = {
-	m_bonus = 5, m_mult = 5, m_lucky = 8, m_glass = 7,
-	m_steel = 9, m_gold = 8, m_wild = 4,
-}
-local edition_value = { foil = 4, holo = 6, polychrome = 11 }
-local seal_value = { Red = 9, Blue = 5, Gold = 6, Purple = 5 }
-
-local function playing_card_utility(state, card)
-	local preferred_rank, preferred_suit = deck_fix_preferences(state)
-	local exact, perfect = 0, 0
-	for _, existing in ipairs(state.deck or {}) do
-		if existing.rank == preferred_rank and existing.suit == preferred_suit then
-			exact = exact + 1
-			if existing.enhancement and existing.edition == "polychrome" and existing.seal == "Red" then
-				perfect = perfect + 1
-			end
-		end
-	end
-
-	local value = -5 + joker_card_synergy(state, card)
-	if card.rank == preferred_rank then value = value + math.max(4, 12 - math.floor(exact / 4)) end
-	if card.suit == preferred_suit then value = value + 5 end
-	if card.rank == preferred_rank and card.suit == preferred_suit then
-		value = value + math.max(2, 7 - math.floor(perfect / 3))
-	end
-	value = value + (enhancement_value[card.enhancement] or 0)
-	value = value + (edition_value[card.edition] or 0)
-	value = value + (seal_value[card.seal] or 0)
-	if has_value(state.jokers, "j_hologram") then value = value + 12 end
-	-- A bloated deck makes an ordinary off-target card actively harmful.
-	value = value - math.max(0, #state.deck - state.starting_deck_size) * 0.75
-	return value
-end
-
 local function random_standard_card(state, stream, index)
 	local card = {
 		suit = state.Cards.suits[stream:integer(1, #state.Cards.suits)],
@@ -2990,13 +2347,14 @@ local function random_standard_card(state, stream, index)
 	return {
 		type = "playing_card",
 		key = "standard_card_" .. tostring(index) .. "_" .. tostring(card.rank) .. "_" .. tostring(card.suit),
-		card = card, cost = 0, utility = playing_card_utility(state, card),
+		card = card, cost = 0,
 	}
 end
 
+-- Telescope: the Planet of the most played hand (none before a hand is played).
 local function telescope_planet(state)
 	if not has_value(state.vouchers or {}, "v_telescope") then return nil end
-	local preferred = state.strategy_plan and state.strategy_plan.primary_hand or nil
+	local preferred
 	local best_count = 0
 	for _, hand in ipairs(planet_names) do
 		local count = (state.hand_usage and state.hand_usage[hand]) or 0
@@ -3106,17 +2464,15 @@ local function pack_candidates(state, key, spec, instance)
 		if spec.family == "celestial" and not item.set then
 			candidates[#candidates + 1] = {
 				type = "planet", key = item.key, hand = item.hand, cost = 0,
-				utility = state.Strategy and state.Strategy.planet_utility(state, item.hand, state.strategy_plan) or 10,
 			}
 		elseif spec.family == "buffoon" then
 			candidates[#candidates + 1] = {
 				type = "joker", key = item.key, cost = 0, edition = item.edition,
-				utility = state.Strategy and state.Strategy.joker_utility(state, item, state.strategy_plan) or item.utility,
 			}
 		elseif spec.family == "standard" then
 			candidates[#candidates + 1] = item
 		else
-			local candidate = deck_tool_offer(state, item)
+			local candidate = tool_offer(item)
 			candidate.cost = 0
 			candidates[#candidates + 1] = candidate
 		end
@@ -3124,17 +2480,6 @@ local function pack_candidates(state, key, spec, instance)
 	return candidates, stream
 end
 
-local function minimum_pack_utility(state, family)
-	if family == "buffoon" then
-		local open_slots = math.max(0, (state.joker_limit or 5) - #(state.jokers or {}))
-		-- Once the pack is paid for, a positive Joker in a genuinely open slot is
-		-- better than taking nothing. Preserve Stencil's empty-slot XMult instead.
-		if open_slots > 0 and not has_joker_kind(state, "empty_slot_xmult") then return 1 end
-		return 14
-	end
-	if family == "standard" then return 5 end
-	return 10
-end
 
 local function ordered_pack_candidates(state, descriptors)
 	local candidates = {}
@@ -3148,7 +2493,7 @@ local function ordered_pack_candidates(state, descriptors)
 			candidates[#candidates + 1] = {
 				type = "playing_card",
 				key = "ordered_standard_" .. tostring(index),
-				card = card, cost = 0, utility = playing_card_utility(state, card),
+				card = card, cost = 0,
 			}
 		elseif descriptor.kind == "center" and descriptor.key then
 			local key, candidate = descriptor.key
@@ -3156,9 +2501,6 @@ local function ordered_pack_candidates(state, descriptors)
 				if planet.key == key then
 					candidate = {
 						type = "planet", key = key, hand = planet.hand, cost = 0,
-						utility = state.Strategy and state.Strategy.planet_utility(
-							state, planet.hand, state.strategy_plan
-						) or 10,
 					}
 					break
 				end
@@ -3168,9 +2510,6 @@ local function ordered_pack_candidates(state, descriptors)
 					if joker.key == key and not state.banned[key] and joker_available(state, key) then
 						candidate = {
 							type = "joker", key = key, cost = 0, edition = descriptor.edition,
-							utility = state.Strategy and state.Strategy.joker_utility(
-								state, joker, state.strategy_plan
-							) or joker.utility,
 						}
 						break
 					end
@@ -3179,7 +2518,7 @@ local function ordered_pack_candidates(state, descriptors)
 			if not candidate then
 				for _, tool in ipairs(state.deck_tools or {}) do
 					if tool.key == key then
-						candidate = deck_tool_offer(state, tool)
+						candidate = tool_offer(tool)
 						candidate.cost = 0
 						break
 					end
@@ -3191,82 +2530,6 @@ local function ordered_pack_candidates(state, descriptors)
 	return candidates
 end
 
-local function pack_support_probability(state, spec)
-	local set = spec.family == "buffoon" and "Joker"
-		or (spec.family == "celestial" and "Planet")
-		or (spec.family == "arcana" and "Tarot") or "Spectral"
-	local chance = 1
-	if spec.family ~= "standard" then
-		local supported = 0
-		if set == "Joker" then
-			supported = #(state.joker_pool or {})
-		elseif set == "Planet" then
-			supported = #(state.planet_pool or {})
-		else
-			for _, tool in ipairs(state.deck_tools or {}) do
-				if tool.set == set then supported = supported + 1 end
-			end
-		end
-		local unsupported = state.content_catalog and state.content_catalog.unsupported
-			and #(state.content_catalog.unsupported[set] or {}) or 0
-		local total = supported + unsupported
-		if total <= 0 then return 0 end
-		local modeled_rate = supported / total
-		local visible_choices = math.max(1, tonumber(spec.choices) or 1)
-		chance = 1 - (1 - modeled_rate) ^ visible_choices
-	end
-
-	-- Revealed packs are also evidence about whether the modeled cards are useful
-	-- to this particular build. Blend that evidence with the catalog prior so a
-	-- run stops repeatedly paying for a family that keeps producing no valid pick.
-	local history = state.pack_history and state.pack_history[spec.family]
-	if history and (history.opened or 0) > 0 then
-		chance = (chance * 2 + (history.picked or 0)) / (2 + history.opened)
-	end
-	return math.max(0, math.min(1, chance))
-end
-
-local function expected_pack_utility(state, spec)
-	local missing = math.max(0, (state.joker_limit or 5) - #(state.jokers or {}))
-	local value
-	if spec.family == "buffoon" then value = 16 + missing * 4 end
-	if spec.family == "celestial" then
-		local plan = state.strategy_plan or {}
-		value = 15 + math.min(8, (state.hand_usage[plan.primary_hand] or 0) * 0.5)
-		if telescope_planet(state) then value = value + 8 end
-	end
-	if spec.family == "arcana" then
-		local pressure = state.Strategy and state.Strategy.deck_fix_pressure
-			and state.Strategy.deck_fix_pressure(state) or 0
-		value = 17 + pressure + math.max(0, 52 - #state.deck) * 0.5
-		if has_value(state.vouchers or {}, "v_omen_globe") then value = value + 4 end
-	end
-	if spec.family == "spectral" then value = state.ghost_deck and 23 or 18 end
-	-- Standard Packs can advance the target card plan, but become less attractive
-	-- as ordinary additions bloat an already large deck.
-	if spec.family == "standard" then
-		value = math.max(10, 17 - math.max(0, #state.deck - state.starting_deck_size) * 1.5)
-	end
-	return (value or 0) * pack_support_probability(state, spec) * weight(state, "pack_value")
-end
-
-local function choose_pack_contents(state, candidates, picks, stream, minimum)
-	local remaining, selected = {}, {}
-	for _, candidate in ipairs(candidates) do
-		if (candidate.utility or 0) >= minimum then remaining[#remaining + 1] = copy_map(candidate) end
-	end
-	for pick = 1, math.min(picks, #remaining) do
-		local choice = state.Policy.choose_shop(remaining, state.difficulty,
-			stream:fork("pick:" .. pick), state.decision_temperature)
-		if not choice then break end
-		selected[#selected + 1] = choice
-		for index, candidate in ipairs(remaining) do
-			if candidate.key == choice.key then table.remove(remaining, index); break end
-		end
-	end
-	return selected
-end
-
 pack_offer = function(state, key, instance)
 	local spec = pack_spec(key)
 	if not spec then return nil end
@@ -3276,7 +2539,6 @@ pack_offer = function(state, key, instance)
 	if state.strict_order_content then
 		return {
 			type = "pack", key = key, cost = spec.cost,
-			utility = expected_pack_utility(state, spec),
 			family = spec.family, picks = spec.picks, instance = instance or 1,
 			ordered_unopened = true,
 		}
@@ -3287,29 +2549,26 @@ pack_offer = function(state, key, instance)
 	if not state.legacy_shop then
 		return {
 			type = "pack", key = key, cost = spec.cost,
-			utility = expected_pack_utility(state, spec),
 			family = spec.family, picks = spec.picks, instance = instance or 1,
 			headless_unopened = true,
 		}
 	end
+	-- legacy_shop (MultiBots' old shop model): a pack is offered opened, with
+	-- the policy's picks (legacy_pack_step: { pack, contents, stream } -> the
+	-- picked contents), and only when it picks something.
 	local candidates, stream = pack_candidates(state, key, spec, instance)
 	if #candidates == 0 then return nil end
-	local selected = choose_pack_contents(
-		state, candidates, spec.picks, stream, minimum_pack_utility(state, spec.family)
-	)
-	if #selected == 0 then return nil end
-	local utility = spec.family == "celestial" and 8
-		or ((spec.family == "arcana" or spec.family == "spectral") and 5 or 4)
-	for _, candidate in ipairs(selected) do utility = utility + math.max(0, candidate.utility or 0) end
-	return {
-		type = "pack", key = key, cost = spec.cost, utility = utility,
-		family = spec.family, contents = candidates, selected = selected,
+	local pack = {
+		type = "pack", key = key, cost = spec.cost, family = spec.family, contents = candidates,
 		picks = spec.picks, instance = instance or 1,
 	}
+	pack.selected = decide(state, "legacy_pack_step", { pack = pack, contents = candidates, stream = stream }, nil)
+	if not pack.selected or #pack.selected == 0 then return nil end
+	return pack
 end
 
--- the old install_joker replacement block, shared with the
--- pack_step compound "take + sell joker" (same order of effects and log entry).
+-- the replacement block shared by the pack_step compound "take + sell joker"
+-- (same order of effects and log entry as the old install_joker).
 local function replace_joker_in_place(state, index, choice)
 	local key = state.jokers[index]
 	local sell_value = joker_sell_value(state, key)
@@ -3325,35 +2584,15 @@ local function replace_joker_in_place(state, index, choice)
 	})
 end
 
--- `strict` never auto-sells (an external policy that makes every decision
--- decides every sale itself).
-install_joker = function(state, choice, strict)
+-- A Joker goes into a free slot (a Negative brings its own); never an
+-- automatic sale.
+install_joker = function(state, choice)
 	if not joker_available(state, choice.key) then return false end
 	if #state.jokers < state.joker_limit or choice.edition == "negative" then
 		state.jokers[#state.jokers + 1] = choice.key
 		initialize_joker(state, choice.key)
 		set_joker_edition(state, choice.key, choice.edition)
 		return true
-	end
-	if strict then return false end
-	local index, weakest = weakest_joker(state)
-	if not worthwhile_replacement(choice, weakest) then return false end
-	replace_joker_in_place(state, index, choice)
-	return true
-end
-
-local function can_install_joker(state, choice)
-	if not joker_available(state, choice.key) then return false end
-	if #state.jokers < state.joker_limit or choice.edition == "negative" then return true end
-	local _, weakest = weakest_joker(state)
-	return worthwhile_replacement(choice, weakest)
-end
-
-local function pack_has_applicable_choice(state, pack)
-	if pack.ordered_unopened then return state.Order and type(state.Order.generate_pack) == "function" end
-	if pack.headless_unopened then return true end   -- opened in apply_pack
-	for _, choice in ipairs(pack.selected or {}) do
-		if choice.type ~= "joker" or can_install_joker(state, choice) then return true end
 	end
 	return false
 end
@@ -3365,7 +2604,7 @@ local function pack_actions(state, contents, taken)
 	local actions, compounds = { { type = "skip" } }, {}
 	for index, item in ipairs(contents) do
 		if not taken[index] then
-			local take = { type = "take", index = index, key = item.key, utility = item.utility }
+			local take = { type = "take", index = index, key = item.key }
 			if item.type == "joker" then
 				if joker_available(state, item.key) then
 					if #state.jokers < state.joker_limit or item.edition == "negative" then
@@ -3374,7 +2613,7 @@ local function pack_actions(state, contents, taken)
 						for slot, key in ipairs(state.jokers) do
 							if state.joker_editions[key] ~= "negative" then
 								compounds[#compounds + 1] = {
-									type = "take", index = index, key = item.key, utility = item.utility,
+									type = "take", index = index, key = item.key,
 									sell_joker = slot, sell_key = key, sell_value = joker_sell_value(state, key),
 								}
 							end
@@ -3399,37 +2638,6 @@ local function find_take(actions, index, sell_joker)
 		if action.type == "take" and action.index == index and action.sell_joker == sell_joker then return position end
 	end
 	return nil
-end
-
--- The old apply_pack walk over pack.selected: a Joker that is unavailable, or
--- has no room and no worthwhile replacement, is passed over (old install_joker
--- returned false); a Joker that needs room replaces the weakest Joker in place.
-local function expert_pack_action(state, ctx, choice)
-	local content
-	for index, item in ipairs(ctx.contents) do
-		if not ctx.session.taken[index] and item.key == choice.key then content = index; break end
-	end
-	if not content then return nil end
-	if choice.type == "joker" then
-		if not joker_available(state, choice.key) then return nil end
-		if #state.jokers < state.joker_limit or choice.edition == "negative" then
-			return find_take(ctx.actions, content, nil)
-		end
-		local index, weakest = weakest_joker(state)
-		if not worthwhile_replacement(choice, weakest) then return nil end
-		return find_take(ctx.actions, content, index)
-	end
-	return find_take(ctx.actions, content, nil)
-end
-
-function Simulator.defaults.pack_step(state, ctx)
-	local session = ctx.session
-	while session.cursor < #session.selected do
-		session.cursor = session.cursor + 1
-		local position = expert_pack_action(state, ctx, session.selected[session.cursor])
-		if position then return position end
-	end
-	return 1
 end
 
 local function apply_pack(state, pack)
@@ -3460,9 +2668,6 @@ local function apply_pack(state, pack)
 				if not found then
 					local candidate = {
 						type = "planet", key = guaranteed.key, hand = guaranteed.hand, cost = 0,
-						utility = state.Strategy and state.Strategy.planet_utility(
-							state, guaranteed.hand, state.strategy_plan
-						) or 10,
 					}
 					if #pack.contents > 0 then pack.contents[#pack.contents] = candidate
 					else pack.contents[1] = candidate end
@@ -3470,29 +2675,15 @@ local function apply_pack(state, pack)
 			end
 		end
 		pack.modeled = {}
-		for _, candidate in ipairs(pack.contents or {}) do
-			pack.modeled[#pack.modeled + 1] = string.format("%s:%.1f",
-				tostring(candidate.key), tonumber(candidate.utility) or 0)
-		end
-		local stream = state.rng:fork("ordered_pack_choice:" .. state.ante .. ":" .. state.round
-			.. ":" .. pack.key .. ":" .. tostring(pack.instance or 1))
-		pack.selected = choose_pack_contents(
-			state, pack.contents, pack.picks or 1, stream, minimum_pack_utility(state, pack.family)
-		)
+		for _, candidate in ipairs(pack.contents or {}) do pack.modeled[#pack.modeled + 1] = tostring(candidate.key) end
 	end
 	if pack.headless_unopened then
 		-- open a headless Booster (see pack_offer).
 		local spec = pack_spec(pack.key)
-		local candidates, stream = pack_candidates(state, pack.key, spec, pack.instance)
+		local candidates = pack_candidates(state, pack.key, spec, pack.instance)
 		pack.contents = candidates
 		pack.modeled = {}
-		for _, candidate in ipairs(candidates) do
-			pack.modeled[#pack.modeled + 1] = string.format("%s:%.1f",
-				tostring(candidate.key), tonumber(candidate.utility) or 0)
-		end
-		pack.selected = choose_pack_contents(
-			state, candidates, spec.picks, stream, minimum_pack_utility(state, spec.family)
-		)
+		for _, candidate in ipairs(candidates) do pack.modeled[#pack.modeled + 1] = tostring(candidate.key) end
 	end
 	-- a Blueprint/Brainstorm copying Hallucination rolls too
 	-- (context.open_booster has no blueprint guard).
@@ -3511,14 +2702,14 @@ local function apply_pack(state, pack)
 	-- least-bad remaining card merely because the pack permits another pick.
 	-- Hook pack_step, one decision per pick (see pack_actions).
 	local contents = pack.contents or {}
-	local session = { selected = pack.selected or {}, cursor = 0, taken = {} }
+	local session = { taken = {} }
 	for _ = 1, #contents + 1 do
 		if #picked >= (pack.picks or 1) then break end
 		local ctx = {
 			pack = pack, contents = contents, picks_left = (pack.picks or 1) - #picked, picked = picked,
 			session = session, actions = pack_actions(state, contents, session.taken),
 		}
-		local index = decide(state, "pack_step", ctx)
+		local index = decide(state, "pack_step", ctx, 1)
 		local action = ctx.actions[index]
 		if not action then error("pack_step returned an invalid action index " .. tostring(index)) end
 		if action.type ~= "take" then break end
@@ -3537,7 +2728,7 @@ local function apply_pack(state, pack)
 				replace_joker_in_place(state, action.sell_joker, choice)
 				applied = true
 			else
-				applied = install_joker(state, choice, true)
+				applied = install_joker(state, choice)
 			end
 		elseif choice.type == "deck_tool" then
 			-- The Emperor, High Priestess and Judgement from a
@@ -3548,7 +2739,7 @@ local function apply_pack(state, pack)
 				or choice.effect == "polychrome_joker" or choice.effect == "negative_joker" then
 				applied = apply_consumable(state, choice, "pack")
 			else
-				apply_deck_tool(state, choice, state.rng:fork("pack_use:" .. state.ante .. ":" .. state.round .. ":" .. choice.key), true)
+				apply_deck_tool(state, choice, state.rng:fork("pack_use:" .. state.ante .. ":" .. state.round .. ":" .. choice.key))
 				if choice.set == "Tarot" then state.tarots_used = state.tarots_used + 1 end
 				remember_consumable(state, choice)
 				applied = true
@@ -3583,34 +2774,12 @@ local function shop_items_string(items)
 	local out = {}
 	for _, item in ipairs(items or {}) do
 		out[#out + 1] = table.concat({
-			tostring(item.key or "unknown"), tostring(item.type or "unknown"),
-			tostring(item.cost or ""), string.format("%.3f", tonumber(item.utility) or 0),
+			tostring(item.key or "unknown"), tostring(item.type or "unknown"), tostring(item.cost or ""),
+			tostring(item.edition or "none"),
 		}, "~")
 	end
 	return #out > 0 and table.concat(out, ";") or "none"
 end
-
-local function ranked_shop_candidates(candidates, chosen)
-	local ranked = {}
-	for _, candidate in ipairs(candidates or {}) do ranked[#ranked + 1] = candidate end
-	table.sort(ranked, function(a, b)
-		if a.utility == b.utility then return tostring(a.key) < tostring(b.key) end
-		return a.utility > b.utility
-	end)
-	local out, seen = {}, false
-	for index = 1, math.min(3, #ranked) do
-		local candidate = ranked[index]
-		out[#out + 1] = table.concat({ tostring(candidate.type), tostring(candidate.key),
-			string.format("%.3f", tonumber(candidate.utility) or 0) }, "~")
-		if candidate == chosen then seen = true end
-	end
-	if chosen and not seen then
-		out[#out + 1] = table.concat({ tostring(chosen.type), tostring(chosen.key),
-			string.format("%.3f", tonumber(chosen.utility) or 0) }, "~")
-	end
-	return #out > 0 and table.concat(out, ";") or "none", ranked[1]
-end
-
 
 -- the shop a headless run sees, built like the real one
 -- (and like Order.generate_shop in a live game) instead of the old two mixed
@@ -3734,53 +2903,15 @@ local function headless_shop_keys(state, reroll)
 	return keys
 end
 
--- Hook shop_step: an external policy can override every shop action.
--- One atomic shop action per step; the Expert's default is the old purchase loop.
-local SHOP_MAX_ACTIONS = 64
+-- Hook shop_step: one atomic shop action per decision.
 local SHOP_MAX_STEPS = 64
+-- Not a game rule: only a guard against a policy that never stops rerolling
+-- (every reroll costs $1 more, so money ends any real reroll chain first).
+local REROLL_GUARD = 100
 
-local function immediate_consumable(offer)
-	if offer.type == "planet" or offer.type == "deck_tool" then return true end
-	return offer.type == "pack"
-		and (offer.family == "arcana" or offer.family == "celestial" or offer.family == "spectral")
-end
-
-local function visible_offer_count(offers)
-	return #offers
-end
-
--- The purchase candidate built from an offer (old affordable-loop fields). The
--- executor rebuilds it for whichever action was chosen, so a buy runs the same
--- code whoever chose it.
-local function shop_candidate(state, offer, offer_index, reserve)
-	local candidate = copy_map(offer)
-	candidate.offer_index = offer_index
-	candidate.base_utility = offer.utility or 0
-	candidate.utility = shop_priority(state, offer)
-		- (weight(state, "economy_value") - 1) * offer.cost * 4
-	candidate.reserve_before = reserve
-	return candidate
-end
-
--- The old loop-top refresh of the offers' utilities (Strategy is pure), plus the
--- free_planets / tonumber cost normalisation (idempotent; the Expert's build
--- below repeats it for its own offers as before).
-local function refresh_offer_utilities(state, offers)
-	if state.Strategy then
-		for _, offer in ipairs(offers) do
-			if offer.type == "joker" then
-				offer.utility = state.Strategy.joker_utility(state, joker_details(state, offer.key), state.strategy_plan)
-			elseif offer.type == "planet" then
-				offer.utility = state.Strategy.planet_utility(state, offer.hand, state.strategy_plan)
-			elseif offer.type == "deck_tool" then
-				for _, tool in ipairs(state.deck_tools) do
-					if tool.key == offer.key then offer.utility = deck_tool_offer(state, tool).utility; break end
-				end
-			elseif offer.type == "pack" then
-				offer.utility = expected_pack_utility(state, pack_spec(offer.key) or offer)
-			end
-		end
-	end
+-- The prices before every shop decision: Astronomer makes Planets and
+-- Celestial Packs free (card.lua Card:set_cost; idempotent).
+local function refresh_offer_costs(state, offers)
 	for _, offer in ipairs(offers) do
 		if has_joker_kind(state, "free_planets")
 			and (offer.type == "planet" or (offer.type == "pack" and offer.family == "celestial")) then
@@ -3790,28 +2921,9 @@ local function refresh_offer_utilities(state, offers)
 	end
 end
 
--- Upstream's Expert treats Planets (and Celestial Packs) as worth buying while
--- an Astronomer is owned or on offer in this shop (it plans to buy it first).
--- only an owned Astronomer makes them free (card.lua
--- Card:set_cost, `free_planets` in refresh_offer_utilities); upstream also set
--- their price to $0 while Astronomer was merely offered.
-local function free_planets_ready(state, offers)
-	if has_joker_kind(state, "free_planets") then return true end
-	for _, offer in ipairs(offers or {}) do
-		local effect = offer.type == "joker" and state.joker_effects and state.joker_effects[offer.key]
-		if effect and effect.kind == "free_planets" then return true end
-	end
-	return false
-end
-
-local function joker_sell_utility(state, key)
-	local details = copy_map(joker_details(state, key))
-	if state.Strategy then return state.Strategy.joker_utility(state, details, state.strategy_plan) end
-	return details.utility or 0
-end
-
 -- The legal shop actions in a fixed order: leave, reroll, per offer (buy, buy +
 -- sell joker j, buy + sell consumable k), sell joker j, sell consumable k, use k.
+-- Every legal action is listed.
 local function shop_actions(state, session)
 	local offers = session.offers
 	local actions = { { type = "leave" } }
@@ -3819,26 +2931,22 @@ local function shop_actions(state, session)
 	local debt = debt_limit(state)
 	-- a reroll may go into debt like a purchase (can_reroll,
 	-- functions/button_callbacks.lua:2077, checks dollars - bankrupt_at).
-	if can_pay(state, reroll_cost, debt) and (state.shop_rerolls or 0) < (state.reroll_cap or 10) then
+	if not state.shop_no_reroll and can_pay(state, reroll_cost, debt)
+		and (state.shop_rerolls or 0) < REROLL_GUARD then
 		actions[#actions + 1] = { type = "reroll", cost = reroll_cost }
 	end
-	local joker_values, joker_utilities = {}, {}
-	for slot, key in ipairs(state.jokers) do
-		joker_values[slot] = joker_sell_value(state, key)
-		joker_utilities[slot] = joker_sell_utility(state, key)
-	end
-	local reserve = state.Strategy and state.Strategy.reserve(state, state.strategy_plan) or 0
+	local joker_values = {}
+	for slot, key in ipairs(state.jokers) do joker_values[slot] = joker_sell_value(state, key) end
 	local jokers_full = #state.jokers >= state.joker_limit
 	local consumables_full = #state.consumables >= state.consumable_limit
 	for offer_index, offer in ipairs(offers) do
 		local cost = tonumber(offer.cost) or 0
-		local priority = shop_candidate(state, offer, offer_index, reserve).utility
 		local function buy(extra)
 			local action = {
 				type = "buy", offer_index = offer_index, offer = offer, key = offer.key, item_type = offer.type,
-				cost = cost, utility = offer.utility or 0, priority = priority,
+				cost = cost,
 			}
-			for name, value in pairs(extra or {}) do action[name] = value end
+			for name, field in pairs(extra or {}) do action[name] = field end
 			actions[#actions + 1] = action
 		end
 		local affordable = cost == 0 or cost <= state.money + debt
@@ -3852,8 +2960,7 @@ local function shop_actions(state, session)
 						-- (card.lua remove_from_deck :656, button_callbacks.lua can_buy :56).
 						if state.joker_editions[key] ~= "negative"
 							and (cost == 0 or cost <= state.money + joker_values[slot] + debt_limit(state, slot)) then
-							buy({ sell_joker = slot, sell_key = key, sell_value = joker_values[slot],
-								sell_utility = joker_utilities[slot] })
+							buy({ sell_joker = slot, sell_key = key, sell_value = joker_values[slot] })
 						end
 					end
 				end
@@ -3863,10 +2970,9 @@ local function shop_actions(state, session)
 				if not consumables_full and affordable then buy() end
 				if consumables_full then
 					for index, consumable in ipairs(state.consumables) do
-						local value = consumable_sell_value(consumable)
-						if cost == 0 or cost <= state.money + value + debt then
-							buy({ sell_consumable = index, sell_key = consumable.key, sell_value = value,
-								sell_utility = consumable_utility(state, consumable) })
+						local sale = consumable_sell_value(consumable)
+						if cost == 0 or cost <= state.money + sale + debt then
+							buy({ sell_consumable = index, sell_key = consumable.key, sell_value = sale })
 						end
 					end
 				end
@@ -3878,188 +2984,56 @@ local function shop_actions(state, session)
 		end
 	end
 	for slot, key in ipairs(state.jokers) do
-		actions[#actions + 1] = { type = "sell_joker", index = slot, key = key, value = joker_values[slot],
-			utility = joker_utilities[slot] }
+		actions[#actions + 1] = { type = "sell_joker", index = slot, key = key, value = joker_values[slot] }
 	end
 	for index, consumable in ipairs(state.consumables) do
 		actions[#actions + 1] = { type = "sell_consumable", index = index, key = consumable.key,
-			value = consumable_sell_value(consumable), utility = consumable_utility(state, consumable) }
+			value = consumable_sell_value(consumable) }
 	end
 	for index, consumable in ipairs(state.consumables) do
 		if consumable_usable(state, consumable) then
-			actions[#actions + 1] = { type = "use", index = index, key = consumable.key,
-				utility = consumable_utility(state, consumable) }
+			actions[#actions + 1] = { type = "use", index = index, key = consumable.key }
 		end
-	end
-	if #actions > SHOP_MAX_ACTIONS then
-		-- Deterministic prune: per offer keep the compound sells of the two lowest
-		-- utility Jokers and of weakest_joker (the Expert's replacement).
-		local weakest_index = weakest_joker(state)
-		local order = {}
-		for slot in ipairs(state.jokers) do order[#order + 1] = slot end
-		table.sort(order, function(a, b)
-			if joker_utilities[a] == joker_utilities[b] then return a < b end
-			return joker_utilities[a] < joker_utilities[b]
-		end)
-		local keep = { [order[1] or 0] = true, [order[2] or 0] = true }
-		if weakest_index then keep[weakest_index] = true end
-		local pruned = {}
-		for _, action in ipairs(actions) do
-			if not (action.type == "buy" and action.sell_joker and not keep[action.sell_joker]) then
-				pruned[#pruned + 1] = action
-			end
-		end
-		actions = pruned
 	end
 	return actions, reroll_cost
 end
 
--- The old purchase-loop body (affordable build, free-negative scan, choose_shop),
--- verbatim; indentation kept for merging. Returns choice, affordable, reserve.
-local function expert_shop_choice(state, session)
-	local offers = session.offers
-	local purchases = session.purchases
-	local permanent_purchases, consumable_purchases = session.permanent, session.consumable
-	do
-		local reserve = state.Strategy and state.Strategy.reserve(state, state.strategy_plan) or 0
-		local affordable = {}
-		for offer_index, offer in ipairs(offers) do
-			local free_planet = free_planets_ready(state, offers)
-			if has_joker_kind(state, "free_planets")
-				and (offer.type == "planet" or (offer.type == "pack" and offer.family == "celestial")) then
-				offer.cost = 0
-			end
-			offer.cost = tonumber(offer.cost) or 0
-			local candidate = shop_candidate(state, offer, offer_index, reserve)
-			local consumable_purchase = immediate_consumable(offer)
-			local capacity_available = consumable_purchase and consumable_purchases < 2
-				or not consumable_purchase and permanent_purchases < 2
-			local missing = math.max(0, state.joker_limit - #state.jokers)
-			local strong_empty_slot_joker = offer.type == "joker" and missing > 0
-				and (offer.utility or 0) >= 14
-			local strong_buffoon = offer.type == "pack" and offer.family == "buffoon" and missing > 0
-				and (offer.utility or 0) >= 26
-			local strong_survival_voucher = offer.type == "voucher" and (offer.utility or 0) >= 30
-			local constellation_fuel = has_joker_kind(state, "planet_scaling_xmult")
-				and (offer.type == "planet" or (offer.type == "pack" and offer.family == "celestial"))
-				and (offer.utility or 0) >= 14
-			local can_break_reserve = strong_empty_slot_joker or strong_buffoon
-				or strong_survival_voucher or constellation_fuel
-			local can_spend = offer.cost <= state.money + debt_limit(state)
-				and (state.money - offer.cost >= reserve or can_break_reserve)
-			local effect = offer.type == "joker" and state.joker_effects[offer.key]
-			local enabler_ready = true
-			if effect and effect.kind == "deck_add_scaling_xmult" and (state.cards_added or 0) == 0 then
-				enabler_ready = false
-				for _, other in ipairs(offers) do
-					if other ~= offer and other.type == "deck_tool" and other.effect == "add"
-						and offer.cost + other.cost <= state.money then
-						enabler_ready = true
-						break
-					end
-				end
-			end
-			local pack_applicable = offer.type ~= "pack" or pack_has_applicable_choice(state, offer)
-			local priority_sufficient = free_planet or candidate.utility >= 10
-			if offer.type == "pack" and not priority_sufficient then
-				local history = state.pack_history[offer.family] or { opened = 0 }
-				-- One high-value first look is legitimate even while another need (most
-				-- commonly empty Joker slots) depresses its shop priority. Once the bot
-				-- has actually sampled that family, ordinary priority rules apply.
-				priority_sufficient = candidate.utility > 0 and history.opened == 0
-					and (offer.utility or 0) >= 14
-			end
-			local is_consumable = offer.type == "planet" or offer.type == "deck_tool"
-			local room, replace_index, replace_card, replace_value = true
-			if is_consumable then
-				if consumable_available(state, offer.key) then
-					room, replace_index, replace_card, replace_value = consumable_room(state, offer)
-				else
-					room = false
-				end
-			end
-			if replace_card and offer.cost <= state.money + replace_value
-				and (state.money + replace_value - offer.cost >= reserve) then
-				can_spend = true
-				candidate.replace_consumable_index = replace_index
-				candidate.sell_consumable_key = replace_card.key
-				candidate.sell_consumable_value = replace_value
-			end
-			if capacity_available and offer.type ~= "joker" and room and pack_applicable
-				and can_spend and (free_planet or (offer.utility or 0) >= 10)
-				and priority_sufficient then
-				affordable[#affordable + 1] = candidate
-			elseif offer.type == "joker" and joker_available(state, offer.key) then
-				local slot_available = #state.jokers < state.joker_limit or offer.edition == "negative"
-				local free_negative = offer.edition == "negative" and offer.cost == 0
-				if free_negative then
-					candidate.free_negative = true
-					candidate.utility = math.max(100, candidate.utility)
-				end
-				if capacity_available and enabler_ready and slot_available and can_spend
-					and ((offer.utility or 0) >= 14 or free_negative)
-					and (candidate.utility >= 14 or free_negative) then
-					affordable[#affordable + 1] = candidate
-				elseif enabler_ready and #state.jokers >= state.joker_limit then
-					local index, weakest = weakest_joker(state)
-					local sell_value = joker_sell_value(state, weakest.key)
-					-- the debt allowance after the sale (selling a
-					-- Credit Card removes it), as the shop_step compound action.
-					if worthwhile_replacement(offer, weakest)
-						and offer.cost <= state.money + sell_value + debt_limit(state, index) then
-						candidate.replace_index = index
-						candidate.sell_key = weakest.key
-						candidate.sell_value = sell_value
-						affordable[#affordable + 1] = candidate
-					end
-				end
-			end
-		end
-
-		local choice
-		for _, candidate in ipairs(affordable) do
-			if candidate.free_negative then choice = candidate; break end
-		end
-		choice = choice or state.Policy.choose_shop(
-			affordable, state.difficulty, shop_stream(state, "decision:" .. (purchases + 1)),
-			state.decision_temperature
-		)
-		return choice, affordable, reserve
-	end
-end
-
-function Simulator.defaults.shop_step(state, ctx)
-	local session = ctx.session
-	-- 1. The old use_held_consumables(state, "shop") after every purchase.
-	if session.use_cursor then
-		local cursor = { cursor = session.use_cursor }
-		local position = default_consumable_use(state, ctx.actions, cursor, "shop")
-		session.use_cursor = position and cursor.cursor or nil
-		if position then return position end
-	end
-	-- group B jokers: a ready Invisible Joker is sold for its copy.
-	local invisible = ready_invisible_action(state, ctx.actions)
-	if invisible then return invisible end
-	-- 2. The old loop condition: no log entry, no shop_stream call.
-	if visible_offer_count(session.offers) == 0 or session.purchases >= 4 then return 1, { silent = true } end
-	-- 3.-5. The old purchase decision.
-	local choice, affordable, reserve = expert_shop_choice(state, session)
-	local meta = { choice = choice, affordable = affordable, reserve = reserve }
-	if not choice then return 1, meta end
-	for position, action in ipairs(ctx.actions) do
-		if action.type == "buy" and action.offer_index == choice.offer_index
-			and action.sell_joker == choice.replace_index and action.sell_consumable == choice.replace_consumable_index then
-			return position, meta
-		end
-	end
-	error("shop_step: the Expert's purchase is not a legal action: " .. tostring(choice.key))
+-- A Joker sale (shop_open, shop_step).
+local function sell_joker(state, index, extra)
+	local key = state.jokers[index]
+	local sale = joker_sell_value(state, key)
+	state.money = state.money + sale
+	note_joker_sold(state, key)
+	clear_joker(state, key)
+	table.remove(state.jokers, index)
+	local decision = { type = "sell_joker", key = key, value = sale, ante = state.ante, round = state.round, source = "shop" }
+	for name, field in pairs(extra or {}) do decision[name] = field end
+	record_decision(state, decision)
 end
 
 local function visit_shop(state, ordered_keys)
 	-- rerolls paid since the last visit belong to this shop.
 	if not state.shop_reroll_pending then state.shop_rerolls = 0 end
-	sell_unsupported_jokers(state)
-	if state.Strategy then state.strategy_plan = state.Strategy.analyze(state) end
+	-- Hook shop_open: Joker sales on entering the shop (e.g. of the Jokers the
+	-- simulator cannot model).
+	local unsupported = state.content_catalog and state.content_catalog.unsupported
+		and state.content_catalog.unsupported.Joker
+	local unsupported_keys = {}
+	for _, key in ipairs(type(unsupported) == "table" and unsupported or {}) do unsupported_keys[key] = true end
+	for _ = 1, #state.jokers + 1 do
+		local ctx = { actions = { { type = "done" } } }
+		for slot, key in ipairs(state.jokers) do
+			ctx.actions[#ctx.actions + 1] = { type = "sell_joker", index = slot, key = key,
+				value = joker_sell_value(state, key), unsupported = unsupported_keys[key] or nil }
+		end
+		local index = decide(state, "shop_open", ctx, 1)
+		local action = ctx.actions[index]
+		if not action then error("shop_open returned an invalid action index " .. tostring(index)) end
+		if action.type == "done" then break end
+		sell_joker(state, action.index, unsupported_keys[action.key]
+			and { reason = "unsupported", round = state.current_round or state.round } or nil)
+	end
+	notify(state, "shop_open")
 	use_held_consumables(state, "shop_start")
 	-- without a live game's keys, build the real shop
 	-- (headless_shop_keys); `legacy_shop` keeps MultiBots' old generator.
@@ -4116,8 +3090,6 @@ local function visit_shop(state, ordered_keys)
 					type = "joker",
 					key = joker.key,
 					cost = joker.cost,
-					utility = state.Strategy and state.Strategy.joker_utility(state, joker, state.strategy_plan)
-						or joker.utility,
 				}
 			end
 		elseif roll < planet_cutoff and #state.planet_pool > 0 then
@@ -4133,8 +3105,6 @@ local function visit_shop(state, ordered_keys)
 				key = planet.key,
 				hand = hand,
 				cost = planet.cost,
-				utility = state.Strategy and state.Strategy.planet_utility(state, hand, state.strategy_plan)
-					or 10 + (state.hand_usage[hand] or 0) * 4 + state.levels[hand],
 			}
 			end
 		elseif #state.deck_tools > 0 or #state.pack_pool > 0 then
@@ -4148,7 +3118,7 @@ local function visit_shop(state, ordered_keys)
 			for _, key in ipairs(state.pack_pool) do eligible[#eligible + 1] = { key = key, pack = true } end
 			if #eligible > 0 then
 				local tool = eligible[stream:integer(1, #eligible)]
-				local offer = tool.pack and pack_offer(state, tool.key, slot) or deck_tool_offer(state, tool)
+				local offer = tool.pack and pack_offer(state, tool.key, slot) or tool_offer(tool)
 				if offer then offers[#offers + 1] = offer end
 			end
 		end
@@ -4213,54 +3183,52 @@ local function visit_shop(state, ordered_keys)
 		record_decision(state, {
 			type = "shop_decision", shop_id = shop_id, chosen = "skip",
 			offered = table.concat(all_offered_keys, ","), supported = table.concat(supported_keys, ","),
-			evaluated = "none", candidates = "none", chosen_utility = 0, best_utility = 0, regret = 0,
-			best_alternative = "none", reserve = state.Strategy and state.Strategy.reserve(state, state.strategy_plan) or 0,
-			reserve_reason = "no_supported_offers", ante = state.ante, round = state.current_round or state.round,
+			evaluated = "none", reserve_reason = "no_supported_offers",
+			ante = state.ante, round = state.current_round or state.round,
 		})
 	end
+	-- a decision's log entry plus the fields its policy logged with it (meta.log)
+	local function log_with(decision, meta)
+		for name, field in pairs(meta and meta.log or {}) do
+			if decision[name] == nil then decision[name] = field end
+		end
+		record_decision(state, decision)
+	end
 
-	-- Hook shop_step. The old purchase loop became one
-	-- decision per atomic action (Simulator.defaults.shop_step is the old loop).
-	local session = { purchases = 0, permanent = 0, consumable = 0, use_cursor = nil, offers = offers, steps = 0 }
+	-- Hook shop_step: one decision per atomic action. session.bought lists this
+	-- visit's purchases; policies may keep their own fields in it.
+	local session = { purchases = 0, bought = {}, offers = offers, steps = 0 }
 	local reroll_requested, requested_reroll_cost
 	while session.steps < SHOP_MAX_STEPS do
-		refresh_offer_utilities(state, offers)
+		refresh_offer_costs(state, offers)
 		local actions, reroll_cost = shop_actions(state, session)
 		local ctx = {
 			session = session, offers = offers, actions = actions, purchases = session.purchases,
 			steps = session.steps, shop_rerolls = state.shop_rerolls or 0, reroll_cost = reroll_cost,
 		}
-		local index, meta = decide(state, "shop_step", ctx)
+		local index, meta = decide(state, "shop_step", ctx, 1)
 		local action = actions[index]
 		if not action then error("shop_step returned an invalid action index " .. tostring(index)) end
 		session.steps = session.steps + 1
 		if action.type == "leave" then
-			local affordable = meta and meta.affordable or {}
-			local reserve = meta and meta.reserve
-				or (state.Strategy and state.Strategy.reserve(state, state.strategy_plan) or 0)
-			local candidate_text, best_candidate = ranked_shop_candidates(affordable, nil)
+			if #offers > 0 and session.purchases < 4 then count_shop_decision(state) end
 			if not (meta and meta.silent) then
-				record_decision(state, {
+				log_with({
 					type = "shop_decision", shop_id = shop_id, chosen = "skip", offered = table.concat(all_offered_keys, ","),
 					supported = table.concat(supported_keys, ","), evaluated = all_evaluated,
-					candidates = candidate_text, chosen_utility = 0,
-					best_utility = best_candidate and best_candidate.utility or 0,
-					regret = best_candidate and math.max(0, tonumber(best_candidate.utility) or 0) or 0,
-					best_alternative = best_candidate and best_candidate.key or "none",
-					reserve = reserve, reserve_reason = not (meta and meta.affordable) and "policy_leave"
-						or (#affordable == 0 and "no_eligible_affordable_offer" or "policy_skip"),
 					ante = state.ante, round = state.current_round or state.round,
-				})
+				}, meta)
 			end
 			break
 		elseif action.type == "reroll" then
 			reroll_requested, requested_reroll_cost = true, action.cost
 			break
 		elseif action.type == "buy" then
-			local affordable = meta and meta.affordable or {}
-			local reserve = meta and meta.reserve
-				or (state.Strategy and state.Strategy.reserve(state, state.strategy_plan) or 0)
-			local choice = shop_candidate(state, offers[action.offer_index], action.offer_index, reserve)
+			local choice = copy_map(offers[action.offer_index])
+			choice.offer_index = action.offer_index
+			if not (choice.type == "joker" and choice.edition == "negative" and choice.cost == 0) then
+				count_shop_decision(state)
+			end
 			if action.sell_joker then
 				choice.replace_index, choice.sell_key, choice.sell_value = action.sell_joker, action.sell_key, action.sell_value
 			end
@@ -4268,25 +3236,13 @@ local function visit_shop(state, ordered_keys)
 				choice.replace_consumable_index = action.sell_consumable
 				choice.sell_consumable_key, choice.sell_consumable_value = action.sell_key, action.sell_value
 			end
-			local logged = meta and meta.choice or choice
-			local candidate_text, best_candidate = ranked_shop_candidates(affordable, logged)
-			local alternative
-			for _, candidate in ipairs(affordable) do
-				if candidate ~= logged and (not alternative or candidate.utility > alternative.utility) then alternative = candidate end
-			end
-			record_decision(state, {
+			log_with({
 				type = "shop_decision", shop_id = shop_id,
 				chosen = "buy_" .. tostring(choice.type) .. ":" .. tostring(choice.key),
 				offered = table.concat(all_offered_keys, ","), supported = table.concat(supported_keys, ","),
-				evaluated = all_evaluated, candidates = candidate_text,
-				chosen_utility = logged.utility, best_utility = best_candidate and best_candidate.utility or logged.utility,
-				regret = math.max(0, (tonumber(best_candidate and best_candidate.utility) or 0) - (tonumber(logged.utility) or 0)),
-				best_alternative = alternative and alternative.key or "skip",
-				replacement = choice.sell_key or choice.sell_consumable_key,
-				reserve = reserve,
-				reserve_reason = state.money - choice.cost >= reserve and "preserves_reserve" or "approved_reserve_exception",
+				evaluated = all_evaluated, replacement = choice.sell_key or choice.sell_consumable_key,
 				ante = state.ante, round = state.current_round or state.round,
-			})
+			}, meta)
 			table.remove(offers, choice.offer_index)
 			if choice.replace_index then
 				state.money = state.money + choice.sell_value
@@ -4335,40 +3291,20 @@ local function visit_shop(state, ordered_keys)
 				picked = choice.picked and table.concat(choice.picked, ",") or nil,
 				revealed = choice.revealed and table.concat(choice.revealed, ",") or nil,
 				modeled = choice.modeled and table.concat(choice.modeled, ",") or nil,
-				utility = logged.base_utility or logged.utility,
-				priority = logged.utility,
-				reserve = logged.reserve_before,
-				plan = state.strategy_plan and state.strategy_plan.primary_hand,
 				supported = choice.type == "pack" and supported_pack_content(state, choice.key) or nil,
 				source = choice.tag_reward,
 				ante = state.ante,
 				round = state.round,
 			})
 			session.purchases = session.purchases + 1
-			if immediate_consumable(choice) then
-				session.consumable = session.consumable + 1
-			else
-				session.permanent = session.permanent + 1
-			end
-			state.strategy_open = true
-			if state.Strategy then state.strategy_plan = state.Strategy.analyze(state) end
-			session.use_cursor = #state.consumables
+			session.bought[#session.bought + 1] = choice
+			notify(state, "shop_buy", choice)
 		elseif action.type == "sell_joker" then
-			local key = state.jokers[action.index]
-			local value = joker_sell_value(state, key)
-			state.money = state.money + value
-			note_joker_sold(state, key)
-			clear_joker(state, key)
-			table.remove(state.jokers, action.index)
-			record_decision(state, {
-				type = "sell_joker", key = key, value = value, ante = state.ante, round = state.round, source = "shop",
-			})
-			if state.Strategy then state.strategy_plan = state.Strategy.analyze(state) end
+			sell_joker(state, action.index)
+			notify(state, "shop_sell", action)
 		else   -- sell_consumable / use
 			run_consumable_action(state, action, "shop")
-			if action.type == "sell_consumable" and state.Strategy then
-				state.strategy_plan = state.Strategy.analyze(state)
-			end
+			if action.type == "sell_consumable" then notify(state, "shop_sell", action) end
 		end
 	end
 	if not reroll_requested then shop_end_jokers(state) end   -- group B jokers
@@ -4377,12 +3313,10 @@ local function visit_shop(state, ordered_keys)
 	for _, offer in ipairs(offers) do
 		if offer.survives_reroll then state.shop_kept_offers[#state.shop_kept_offers + 1] = offer end
 	end
-	normalize_joker_order(state, "shop")
+	-- Hook arrange_jokers (leaving the shop).
+	arrange_jokers(state, "shop")
 	state.shop_visits = (state.shop_visits or 0) + 1
-	if not state.strategy_open then
-		state.strategy_open = true
-		if state.Strategy then state.strategy_plan = state.Strategy.analyze(state) end
-	end
+	notify(state, "shop_end")
 	return {
 		keys = copy_array(ordered_keys or {}),
 		supported_keys = supported_keys,
@@ -4391,7 +3325,6 @@ local function visit_shop(state, ordered_keys)
 		money = state.money,
 		reroll_requested = reroll_requested,   -- shop_step chose "reroll"
 		reroll_cost = requested_reroll_cost,
-		reserve = state.Strategy and state.Strategy.reserve(state, state.strategy_plan) or 0,
 		tag_rewards = tag_rewards,
 	}
 end
@@ -4473,6 +3406,9 @@ local function begin_round(state, target, round_name, telemetry_name)
 		state.bosses_used[boss] = (state.bosses_used[boss] or 0) + 1
 		if boss == "bl_manacle" then state.round_hand_size = (state.round_hand_size or 0) - 1 end
 	end
+	-- Hook arrange_jokers (before the round's Joker effects, e.g. which Joker
+	-- Ceremonial Dagger destroys).
+	arrange_jokers(state, "blind_start")
 	prepare_round_jokers(state, round_name)
 	use_held_consumables(state, "cartomancer")
 	disable_boss_blind(state)   -- Chicot
@@ -4482,7 +3418,7 @@ local function begin_round(state, target, round_name, telemetry_name)
 	state.hand = {}
 	state.used_cards = {}
 	state.round_hand_usage = {}
-	if state.Strategy then state.strategy_plan = state.Strategy.analyze(state) end
+	notify(state, "round_start")
 	draw_to_limit(state, current_hand_size(state))
 
 	local hands_left, discards_left = current_round_resources(state)
@@ -4616,13 +3552,13 @@ local function step_round(session)
 	local state = session.state
 	while can_continue_round(session) do
 		session.turn = session.turn + 1
-		local decision_rng = state.rng:fork(
-			"decision:" .. state.ante .. ":" .. session.round_name .. ":" .. session.turn .. ":" .. state.difficulty
-		)
 		local resolved_order_cache = {}
+		-- choose_turn(args, state): play { type = "play", indices[, joker_order],
+		-- result = evaluate(...) } or discard { type = "discard", indices };
+		-- action.log fields go into the decision's log entry.
 		local action = state.Policy.choose_turn({
-			difficulty = state.difficulty,
-			decision_temperature = state.decision_temperature,
+			round_name = session.round_name,
+			turn = session.turn,
 			hand = state.hand,
 			discards_left = session.discards_left,
 			starting_discards = session.starting_discards,
@@ -4631,17 +3567,18 @@ local function step_round(session)
 			current_score = session.cumulative,
 			target = session.target,
 			hands_left = session.hands_left,
-			rng = decision_rng,
-			strategy = joker_strategy(state),
-			weights = state.weights,
 			draw_pile = state.draw_pile,
-			evaluate = function(cards, full_hand)
-				local _, result = optimize_joker_order(state, cards,
-					joker_context(state, cards, session.hands_left, session.discards_left, full_hand),
-					resolved_order_cache)
+			-- evaluate(cards, full_hand[, order]): the score of playing `cards` with
+			-- the Joker order `order`, or with the order the joker_order hook picks.
+			evaluate = function(cards, full_hand, order)
+				local context = joker_context(state, cards, session.hands_left, session.discards_left, full_hand)
+				if order == nil then return scored_play(state, cards, context, resolved_order_cache, full_hand) end
+				check_joker_order(state, order, "evaluate")
+				local result = order_evaluator(state, cards, context, resolved_order_cache)(order)
+				result.joker_order = copy_array(order)
 				return result
 			end,
-		})
+		}, state)
 		if not action then return nil, finish_round(session), true end
 		local hand_before = cards_string(state.hand)
 		local diagnostic = {
@@ -4656,17 +3593,17 @@ local function step_round(session)
 			discards_remaining = session.discards_left,
 			money = state.money,
 			hand_contents = hand_before,
-			candidates = candidates_string(action.candidates),
-			chosen_utility = action.chosen_utility or action.utility,
-			best_utility = action.best_utility or action.utility,
-			regret = action.regret or 0,
 		}
 		diagnostic.snapshot = compact_snapshot(state, diagnostic)
+		if action.type == "discard" and session.discards_left <= 0 then
+			error("choose_turn returned a discard with no discards left")
+		end
+		local full_hand = state.hand
 		local selected
 		selected, state.hand = state.Cards.remove_indices(state.hand, action.indices)
 		for _, card in ipairs(selected) do state.used_cards[#state.used_cards + 1] = card end
 
-		if action.type == "discard" and session.discards_left > 0 then
+		if action.type == "discard" then
 			-- Burnt Joker: discards_used <= 0
 			if session.discards_left == session.starting_discards then level_first_discard(state, session, selected) end
 			session.discards_left = session.discards_left - 1
@@ -4674,7 +3611,7 @@ local function step_round(session)
 			state.discarded_cards = state.discarded_cards + #selected
 			update_discard_jokers(state, selected)
 			adjust_owned_jokers(state, "discard_decay_xmult", -#selected)
-			record_decision(state, {
+			record_decision(state, with_log({
 				type = "discard",
 				count = #selected,
 				selected = cards_string(selected),
@@ -4682,15 +3619,23 @@ local function step_round(session)
 				current_score = diagnostic.current_score, required_score = diagnostic.required_score,
 				pressure = diagnostic.pressure, hands_remaining = diagnostic.hands_remaining,
 				discards_remaining = diagnostic.discards_remaining,
-				hand_contents = diagnostic.hand_contents, candidates = diagnostic.candidates,
-				chosen_utility = diagnostic.chosen_utility, best_utility = diagnostic.best_utility,
-				regret = diagnostic.regret, snapshot = diagnostic.snapshot, money = diagnostic.money,
-			})
+				hand_contents = diagnostic.hand_contents,
+				snapshot = diagnostic.snapshot, money = diagnostic.money,
+			}, action.log))
 			expire_owned_jokers(state, "discard_decay_xmult")
 		else
 			session.discards_used_this_hand = 0
+			-- The play's Joker order (arranging Jokers is free), then the score of
+			-- the played cards with that order, as the rules compute it.
+			local order = action.joker_order or (action.result and action.result.joker_order) or state.jokers
+			check_joker_order(state, order, "choose_turn")
 			local previous_order = copy_array(state.jokers)
-			if action.result.joker_order then state.jokers = copy_array(action.result.joker_order) end
+			state.jokers = copy_array(order)
+			local scored = order_evaluator(state, selected,
+				joker_context(state, selected, session.hands_left, session.discards_left, full_hand),
+				resolved_order_cache)(state.jokers)
+			scored.joker_order = copy_array(state.jokers)
+			action.result = scored
 			if not same_order(previous_order, state.jokers) then
 				record_decision(state, {
 					type = "reorder_jokers",
@@ -4756,7 +3701,7 @@ local function step_round(session)
 				hand_score = action.result.score,
 			}
 			session.hands[#session.hands + 1] = played
-			record_decision(state, {
+			record_decision(state, with_log({
 				type = "play",
 				hand = action.result.name,
 				cards = #selected, selected = cards_string(selected),
@@ -4765,10 +3710,9 @@ local function step_round(session)
 				current_score = diagnostic.current_score, required_score = diagnostic.required_score,
 				pressure = diagnostic.pressure, hands_remaining = diagnostic.hands_remaining,
 				discards_remaining = diagnostic.discards_remaining,
-				hand_contents = diagnostic.hand_contents, candidates = diagnostic.candidates,
-				chosen_utility = diagnostic.chosen_utility, best_utility = diagnostic.best_utility,
-				regret = diagnostic.regret, snapshot = diagnostic.snapshot, money = diagnostic.money,
-			})
+				hand_contents = diagnostic.hand_contents,
+				snapshot = diagnostic.snapshot, money = diagnostic.money,
+			}, action.log))
 			expire_owned_jokers(state, "decaying_chips")
 			expire_owned_jokers(state, "limited_retrigger")
 		end
@@ -4777,7 +3721,7 @@ local function step_round(session)
 		local round_over = action.type ~= "discard" and (session.hands_left <= 0
 			or (session.target and session.cumulative >= session.target))
 		if not round_over then draw_to_limit(state, current_hand_size(state)) end
-		if state.Strategy then state.strategy_plan = state.Strategy.analyze(state) end
+		notify(state, "turn")
 		if action.type ~= "discard" then
 			if not can_continue_round(session) then finish_round(session) end
 			return session.hands[#session.hands], session.result, session.finished
@@ -4792,26 +3736,25 @@ local function play_round(state, target, round_name, telemetry_name)
 	return session.result
 end
 
+-- dependencies.Policy decides for the player (see decide); the policy reads
+-- its own settings from the run's options (state.options).
 function Simulator.new(options, dependencies)
 	options = options or {}
+	assert(dependencies.Policy and dependencies.Policy.choose_turn,
+		"Simulator.new needs dependencies.Policy, a decision policy (for MultiBots' own: bot/expert.lua Expert.modules)")
 	local catalog = options.content_catalog
 	if not catalog and dependencies.Content then catalog = dependencies.Content.defaults() end
 	local state = {
 		Cards = dependencies.Cards,
 		Evaluator = dependencies.Evaluator,
 		Policy = dependencies.Policy,
-		Strategy = dependencies.Strategy,
-		Weights = dependencies.Weights,
-		weights = dependencies.Weights and dependencies.Weights.copy(options.weights)
-			or copy_map(options.weights or {}),
+		options = options,
 		Order = dependencies.Order,
 		base_score = Simulator.base_score,
 		seed = tostring(options.seed or "MULTBOT"),
 		rng = dependencies.PRNG.new(options.seed or "MULTBOT"),
 		deck = dependencies.Cards.standard_deck(),
 		deck_name = options.deck or "Red Deck",
-		difficulty = options.difficulty or "normal",
-		decision_temperature = math.max(0, tonumber(options.decision_temperature) or 0),
 		the_order = options.the_order == true,
 		banned = options.banned_jokers or {},
 		joker_pool = options.joker_pool or (catalog and catalog.jokers) or {},
@@ -4862,7 +3805,6 @@ function Simulator.new(options, dependencies)
 		cards_added = 0,
 		shop_index = 0,
 		shop_rerolls = 0,   -- rerolls in the current shop
-		reroll_cap = tonumber(options.reroll_cap) or 10,   -- legal rerolls per shop
 		ante = 1,
 		round = 0,
 		decisions = {},
@@ -4873,12 +3815,10 @@ function Simulator.new(options, dependencies)
 		skips = 0,
 		opponent_skips = 0,
 		skip_plans = {},
-		strategy_open = false,
 		pending_tag_jokers = {},
 		pack_history = {},
 		strict_order_content = options.strict_order_content == true,
 		legacy_shop = options.legacy_shop == true,   -- see visit_shop
-		exact_joker_order = options.exact_joker_order == true,   -- see optimize_joker_order
 		pending_investment = 0,
 		pool_flags = {},
 	}
@@ -4915,73 +3855,8 @@ function Simulator.new(options, dependencies)
 		end
 	end
 	state.starting_deck_size = #state.deck
-	if state.Strategy then state.strategy_plan = state.Strategy.analyze(state) end
+	notify(state, "new")
 	return state
-end
-
-function Simulator.should_reroll(state, report, cost)
-	cost = tonumber(cost) or 5
-	if not report then return false end
-	if cost == 0 then return true end
-	local interest_floor = math.max(0, (tonumber(state.interest_cap) or 5) * 5)
-	local economy_joker = has_economy_joker(state)
-	local previous_bot = tonumber(state.previous_pvp_score) or 0
-	local previous_player = tonumber(state.previous_player_score) or 0
-	local emergency = (tonumber(state.ante) or 1) >= 3 and previous_bot > 0
-		and previous_player >= previous_bot * 2
-	if not economy_joker and not emergency and state.money - cost < interest_floor then return false end
-	local reserve = not economy_joker and state.Strategy
-		and state.Strategy.reserve(state, state.strategy_plan) or 0
-	if emergency then reserve = 0 end
-	if state.money - cost < reserve then return false end
-	local has_power = false
-	for _, key in ipairs(state.jokers or {}) do
-		local effect = state.joker_effects and state.joker_effects[key]
-		local kind = effect and effect.kind
-		local current = effect and ((state.joker_state and state.joker_state[key]) or effect.initial) or 1
-		local repeat_hand_active = false
-		if kind == "repeat_hand_xmult" then
-			for _, uses in pairs(state.round_hand_usage or {}) do
-				if uses >= 2 then
-					repeat_hand_active = true
-					break
-				end
-			end
-		end
-		local reliable = kind == "flat_xmult"
-			or kind == "rotating_suit_xmult"
-			or (kind == "blind_scaling_xmult" and (current or 1) >= 1.5)
-			or ((kind == "planet_scaling_xmult" or kind == "deck_add_scaling_xmult"
-				or kind == "discard_decay_xmult") and (current or 1) >= 1.2)
-			or repeat_hand_active
-			or (kind == "hand_xmult" and state.strategy_plan
-				and (effect.hand == state.strategy_plan.primary_hand
-					or effect.hand == state.strategy_plan.secondary_hand)
-				and (state.strategy_plan.confidence or 0) >= 0.35)
-			or (kind == "empty_slot_xmult"
-				and (state.joker_limit or 5) - #(state.jokers or {}) + 1 >= 2)
-		if reliable and xmult_effects[kind] then
-			has_power = true
-			break
-		end
-	end
-	local surplus = state.money - cost - reserve
-	local late_power_gap = (tonumber(state.ante) or 1) >= 4 and not has_power
-	if emergency and not has_power then return state.money >= cost end
-	if late_power_gap then return true end
-	if (tonumber(report.purchases) or 0) > 0 then return false end
-	if surplus >= 25 then return true end
-	local chance = ({ easy = 0.05, normal = 0.16, hard = 0.28, expert = 0.40 })[state.difficulty] or 0.16
-	local missing_jokers = math.max(0, (state.joker_limit or 5) - #(state.jokers or {}))
-	if missing_jokers >= 3 then chance = chance + 0.25
-	elseif missing_jokers > 0 then chance = chance + 0.10 end
-	if #(report.supported_keys or {}) == 0 then chance = chance + 0.10 end
-	if surplus >= 10 then chance = chance + 0.15 end
-	if late_power_gap then chance = chance + 0.20 end
-	local stream = state.rng:fork(string.format(
-		"reroll:%s:%s:%s", tostring(state.ante), tostring(state.shop_visits), tostring(state.times_rerolled)
-	))
-	return stream:next() < math.min(0.8, chance)
 end
 
 Simulator.debt_limit = debt_limit   -- for invariant checks
@@ -5019,12 +3894,7 @@ function Simulator.set_ante(state, ante)
 	if state.pizza_bonus_ante and state.ante > state.pizza_bonus_ante then
 		state.pizza_bonus_ante, state.pizza_discards = nil, 0
 	end
-	if state.ante > 1 and not state.strategy_open then
-		-- Loaded/custom runs that begin after Ante 1 have already passed the
-		-- point where first-shop exploration is meaningful.
-		state.strategy_open = true
-		if state.Strategy then state.strategy_plan = state.Strategy.analyze(state) end
-	end
+	notify(state, "set_ante")
 end
 
 -- more Tags the headless run applies (tag.lua apply_to_run).
@@ -5044,59 +3914,21 @@ local function skip_reward_supported(state, tag)
 	return false
 end
 
--- Reactive pressure is useful once per Ante. Chaining both skips after one
--- dominant PvP result throws away two payouts, two shops, and two rounds of
--- scaling. If both rolls fire, keep the skip with an actual modeled reward;
--- otherwise prefer Big Blind because it applies pressure later in the Ante.
--- Hook skip_pair: an external policy can override the Blind skips, ctx = { mode, small, big } (the plan_skips
--- candidates); returns small_selected, big_selected.
-function Simulator.defaults.skip_pair(state, ctx)
-	local small, big = ctx.small.selected, ctx.big.selected
-	if ctx.mode == "reactive" and state.previous_pvp_dominant and small and big then
-		if ctx.small.supported and not ctx.big.supported then
-			big = false
-		else
-			small = false
-		end
-	end
-	return small, big
-end
-
+-- Hook skip_pair: which Blinds of this Ante to skip (ctx in bot/expert.lua).
+-- The Tag rewards below are rules.
 function Simulator.plan_skips(state, mode, tags)
 	local ante = tonumber(state.ante) or 1
 	if state.skip_plans[ante] then return state.skip_plans[ante] end
 	local plan = {}
 	state.skip_plans[ante] = plan
-	if mode == "disabled" or not state.Policy.should_skip_blind then return plan end
+	if mode == "disabled" then return plan end
 	local candidates = {}
 	for _, blind in ipairs({ "Small", "Big" }) do
 		local tag = tags and tags[blind]
-		local supported = skip_reward_supported(state, tag)
-		candidates[blind] = {
-			tag = tag,
-			supported = supported,
-			selected = state.Policy.should_skip_blind({
-			mode = mode or "reactive",
-			difficulty = state.difficulty,
-			ante = ante,
-			blind = blind,
-			money = state.money,
-			joker_count = #state.jokers,
-			joker_limit = state.joker_limit,
-			tag = tag,
-			previous_pvp_dominant = state.previous_pvp_dominant == true,
-			previous_score = state.previous_pvp_score,
-			next_blind_target = Simulator.base_score(ante, Simulator.blind_scaling(state.stake))
-				* (blind == "Small" and 1.5 or 2),
-			strict_order_content = state.strict_order_content,
-			reward_supported = supported,
-			rng = state.rng:fork("skip:" .. ante .. ":" .. blind),
-			}),
-		}
+		candidates[blind] = { tag = tag, supported = skip_reward_supported(state, tag) }
 	end
-	-- Hook skip_pair (the post-filter below is its default).
 	candidates.Small.selected, candidates.Big.selected = decide(state, "skip_pair",
-		{ mode = mode or "reactive", small = candidates.Small, big = candidates.Big })
+		{ mode = mode or "reactive", ante = ante, small = candidates.Small, big = candidates.Big })
 	for _, blind in ipairs({ "Small", "Big" }) do
 		local candidate = candidates[blind]
 		local tag = candidate.tag
@@ -5218,7 +4050,7 @@ function Simulator.apply_pvp_effect(state, action)
 			type = "opponent_effect", effect = action, hand = chosen,
 			value = state.levels[chosen], ante = state.ante, round = state.current_round,
 		})
-		if state.Strategy then state.strategy_plan = state.Strategy.analyze(state) end
+		notify(state, "pvp_effect", action)
 		return true
 	elseif action == "letsGoGamblingNemesis" then
 		state.money = state.money + 10
@@ -5240,19 +4072,48 @@ function Simulator.visit_shop(state, ordered_keys)
 	return visit_shop(state, ordered_keys)
 end
 
--- the keys (and _metadata editions) of a headless shop
--- visit, or of a reroll; visit_shop uses it when no live keys are given.
--- test access to the target picks (unit tests). `stream`
--- is the tool's stream (the hand draw comes from it).
-function Simulator.default_targets(state, tool, stream)
-	local preferred_rank, preferred_suit = deck_fix_preferences(state)
-	local function fix_score(card) return deck_fix_score(state, card, preferred_rank, preferred_suit) end
-	local hand = tool_hand(state, stream)
-	local low = ordered_cards(hand, true, fix_score)
-	local high = ordered_cards(hand, false, fix_score)
-	local default = default_targets(state, tool, hand, low, high, fix_score, preferred_rank)
-	return default, target_actions(state, tool, default, low, high, preferred_rank, preferred_suit)
+-- One shop with its rerolls, for every driver (peer.lua, Simulator.run,
+-- training/fitness.lua). The first visit uses `keys` (a live game's keys, or
+-- nil for a headless shop). After each visit the shop is rerolled when
+-- shop_step chose "reroll" or the reroll_step hook says so, and it is paid.
+-- options.reroll_keys(state) -> keys[, error]: a live reroll's keys; without
+-- it a live shop cannot be rerolled, while a headless one rerolls with its own
+-- keys. options.visit(keys, source): one visit (default Simulator.visit_shop).
+-- options.on_reroll_failed(error): a reroll could not be generated or paid.
+function Simulator.shop_phase(state, keys, options)
+	options = options or {}
+	local visit = options.visit or function(visit_keys) return Simulator.visit_shop(state, visit_keys) end
+	local headless = keys == nil
+	local reroll_keys = options.reroll_keys
+	local can_reroll = headless or reroll_keys ~= nil
+	state.shop_no_reroll = not can_reroll or nil
+	local report = visit(keys, "visit")
+	local rerolls = 0
+	while can_reroll and rerolls < REROLL_GUARD do
+		local cost = Simulator.next_reroll_cost(state, rerolls)
+		local wanted = report.reroll_requested
+		if not wanted then
+			wanted = decide(state, "reroll_step", {
+				report = report, cost = cost, rerolls_this_shop = rerolls, headless = headless,
+			})
+		end
+		if not wanted then break end
+		local next_keys, reroll_error
+		if not headless then next_keys, reroll_error = reroll_keys(state) end
+		if (headless or next_keys) and Simulator.pay_reroll(state, cost) then
+			rerolls = rerolls + 1
+			report = visit(next_keys, "reroll")
+		else
+			if options.on_reroll_failed then options.on_reroll_failed(reroll_error) end
+			break
+		end
+	end
+	state.shop_no_reroll = nil
+	return report
 end
+
+-- the hand a deck tool draws from its stream (unit tests)
+Simulator.tool_hand = tool_hand
 Simulator.apply_deck_tool = apply_deck_tool
 -- test access to held-consumable use and its can_use rule (unit tests).
 function Simulator.apply_consumable(state, consumable, source)
@@ -5261,10 +4122,9 @@ end
 function Simulator.consumable_usable(state, consumable)
 	return consumable_usable(state, consumable)
 end
-function Simulator.deck_tool_offer(state, tool)
-	return deck_tool_offer(state, tool)
-end
 
+-- the keys (and _metadata editions) of a headless shop
+-- visit, or of a reroll; visit_shop uses it when no live keys are given.
 function Simulator.shop_keys(state, reroll)
 	return headless_shop_keys(state, reroll)
 end
@@ -5362,7 +4222,6 @@ function Simulator.snapshot(state)
 	for _, consumable in ipairs(state.consumables or {}) do consumables[#consumables + 1] = consumable.key end
 	return {
 		money = state.money,
-		weights = copy_map(state.weights),
 		jokers = copy_array(state.jokers),
 		joker_editions = copy_map(state.joker_editions),
 		levels = copy_map(state.levels),
@@ -5377,7 +4236,6 @@ function Simulator.export(state, ante_states)
 	for _, consumable in ipairs(state.consumables or {}) do consumables[#consumables + 1] = consumable.key end
 	return {
 		money = state.money,
-		weights = copy_map(state.weights),
 		jokers = copy_array(state.jokers),
 		joker_editions = copy_map(state.joker_editions),
 		levels = copy_map(state.levels),
@@ -5388,7 +4246,6 @@ function Simulator.export(state, ante_states)
 		consumables = consumables,
 		consumable_limit = state.consumable_limit,
 		consumables_used = state.consumables_used,
-		decision_temperature = state.decision_temperature,
 		the_order = state.the_order,
 		skips = state.skips,
 	}
@@ -5404,17 +4261,39 @@ function Simulator.run(options, dependencies)
 		local base = Simulator.base_score(ante)
 		local small = Simulator.play_round(state, base, "Small")
 		Simulator.award_blind(state, "Small", small)
-		Simulator.visit_shop(state)
+		Simulator.shop_phase(state)
 		local big = Simulator.play_round(state, base * 1.5, "Big")
 		Simulator.award_blind(state, "Big", big)
-		Simulator.visit_shop(state)
+		Simulator.shop_phase(state)
 		ante_states[ante] = Simulator.snapshot(state)
 		local pvp = Simulator.play_round(state, nil, "Boss", "PvP")
 		snapshots[ante] = { hands = pvp.hands }
 		state.money = state.money + pvp.hands_left
-		Simulator.visit_shop(state)
+		Simulator.shop_phase(state)
 	end
 	return snapshots, Simulator.export(state, ante_states)
 end
+
+-- Rules helpers for policies (bot/expert.lua builds on them).
+Simulator.rules = {
+	has_joker_kind = has_joker_kind,
+	joker_details = joker_details,
+	joker_sell_value = joker_sell_value,
+	joker_available = joker_available,
+	consumable_available = consumable_available,
+	consumable_sell_value = consumable_sell_value,
+	debt_limit = debt_limit,
+	pack_spec = pack_spec,
+	telescope_planet = telescope_planet,
+	decision_stream = decision_stream,
+	find_action = find_action,
+	find_take = find_take,
+	base_score = Simulator.base_score,
+	blind_scaling = Simulator.blind_scaling,
+	spectral_usable = spectral_usable,
+	inferred_rarity = inferred_rarity,
+	vanilla_jokers_by_rarity = vanilla_jokers_by_rarity,
+	current_hand_size = current_hand_size,
+}
 
 return Simulator

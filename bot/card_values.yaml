@@ -1,0 +1,307 @@
+# Expert card values: 0 = worst, 50 = no opinion (use the Expert's own judgement), 100 = best.
+# 50 leaves a card exactly as the Expert values it; 100 doubles its value, 0 makes it worthless.
+# The simulator never reads this file.
+
+jokers:
+  j_joker: 50              # Joker
+  j_greedy_joker: 50       # Greedy Joker
+  j_lusty_joker: 50        # Lusty Joker
+  j_wrathful_joker: 50     # Wrathful Joker
+  j_gluttenous_joker: 50   # Gluttonous Joker
+  j_jolly: 50              # Jolly Joker
+  j_zany: 50               # Zany Joker
+  j_mad: 50                # Mad Joker
+  j_crazy: 50              # Crazy Joker
+  j_droll: 50              # Droll Joker
+  j_sly: 50                # Sly Joker
+  j_wily: 50               # Wily Joker
+  j_clever: 50             # Clever Joker
+  j_devious: 50            # Devious Joker
+  j_crafty: 50             # Crafty Joker
+  j_half: 50               # Half Joker
+  j_stencil: 50            # Joker Stencil
+  j_four_fingers: 50       # Four Fingers
+  j_mime: 50               # Mime
+  j_credit_card: 50        # Credit Card
+  j_ceremonial: 50         # Ceremonial Dagger
+  j_banner: 50             # Banner
+  j_mystic_summit: 50      # Mystic Summit
+  j_marble: 50             # Marble Joker
+  j_loyalty_card: 50       # Loyalty Card
+  j_8_ball: 50             # 8 Ball
+  j_misprint: 50           # Misprint
+  j_dusk: 50               # Dusk
+  j_raised_fist: 50        # Raised Fist
+  j_chaos: 50              # Chaos the Clown
+  j_fibonacci: 50          # Fibonacci
+  j_steel_joker: 50        # Steel Joker
+  j_scary_face: 50         # Scary Face
+  j_abstract: 50           # Abstract Joker
+  j_delayed_grat: 50       # Delayed Gratification
+  j_hack: 50               # Hack
+  j_pareidolia: 50         # Pareidolia
+  j_gros_michel: 50        # Gros Michel
+  j_even_steven: 50        # Even Steven
+  j_odd_todd: 50           # Odd Todd
+  j_scholar: 50            # Scholar
+  j_business: 50           # Business Card
+  j_supernova: 50          # Supernova
+  j_ride_the_bus: 50       # Ride the Bus
+  j_space: 50              # Space Joker
+  j_egg: 50                # Egg
+  j_burglar: 50            # Burglar
+  j_blackboard: 50         # Blackboard
+  j_runner: 50             # Runner
+  j_ice_cream: 50          # Ice Cream
+  j_dna: 50                # DNA
+  j_splash: 50             # Splash
+  j_blue_joker: 50         # Blue Joker
+  j_sixth_sense: 50        # Sixth Sense
+  j_constellation: 50      # Constellation
+  j_hiker: 50              # Hiker
+  j_faceless: 50           # Faceless Joker
+  j_green_joker: 50        # Green Joker
+  j_superposition: 50      # Superposition
+  j_todo_list: 50          # To Do List
+  j_cavendish: 50          # Cavendish
+  j_card_sharp: 50         # Card Sharp
+  j_red_card: 50           # Red Card
+  j_madness: 50            # Madness
+  j_square: 50             # Square Joker
+  j_seance: 50             # Seance
+  j_riff_raff: 50          # Riff-raff
+  j_vampire: 50            # Vampire
+  j_shortcut: 50           # Shortcut
+  j_hologram: 50           # Hologram
+  j_vagabond: 50           # Vagabond
+  j_baron: 50              # Baron
+  j_cloud_9: 50            # Cloud 9
+  j_rocket: 50             # Rocket
+  j_obelisk: 50            # Obelisk
+  j_midas_mask: 50         # Midas Mask
+  j_luchador: 50           # Luchador
+  j_photograph: 50         # Photograph
+  j_gift: 50               # Gift Card
+  j_turtle_bean: 50        # Turtle Bean
+  j_erosion: 50            # Erosion
+  j_reserved_parking: 50   # Reserved Parking
+  j_mail: 50               # Mail-In Rebate
+  j_to_the_moon: 50        # To the Moon
+  j_hallucination: 50      # Hallucination
+  j_fortune_teller: 50     # Fortune Teller
+  j_juggler: 50            # Juggler
+  j_drunkard: 50           # Drunkard
+  j_stone: 50              # Stone Joker
+  j_golden: 50             # Golden Joker
+  j_lucky_cat: 50          # Lucky Cat
+  j_baseball: 50           # Baseball Card
+  j_bull: 50               # Bull
+  j_diet_cola: 50          # Diet Cola
+  j_trading: 50            # Trading Card
+  j_flash: 50              # Flash Card
+  j_popcorn: 50            # Popcorn
+  j_trousers: 50           # Spare Trousers
+  j_ancient: 50            # Ancient Joker
+  j_ramen: 50              # Ramen
+  j_walkie_talkie: 50      # Walkie Talkie
+  j_selzer: 50             # Seltzer
+  j_castle: 50             # Castle
+  j_smiley: 50             # Smiley Face
+  j_campfire: 50           # Campfire
+  j_ticket: 50             # Golden Ticket
+  j_mr_bones: 50           # Mr. Bones
+  j_acrobat: 50            # Acrobat
+  j_sock_and_buskin: 50    # Sock and Buskin
+  j_swashbuckler: 50       # Swashbuckler
+  j_troubadour: 50         # Troubadour
+  j_certificate: 50        # Certificate
+  j_smeared: 50            # Smeared Joker
+  j_throwback: 50          # Throwback
+  j_hanging_chad: 50       # Hanging Chad
+  j_rough_gem: 50          # Rough Gem
+  j_bloodstone: 50         # Bloodstone
+  j_arrowhead: 50          # Arrowhead
+  j_onyx_agate: 50         # Onyx Agate
+  j_glass: 50              # Glass Joker
+  j_ring_master: 50        # Showman
+  j_flower_pot: 50         # Flower Pot
+  j_blueprint: 50          # Blueprint
+  j_wee: 50                # Wee Joker
+  j_merry_andy: 50         # Merry Andy
+  j_oops: 50               # Oops! All 6s
+  j_idol: 50               # The Idol
+  j_seeing_double: 50      # Seeing Double
+  j_matador: 50            # Matador
+  j_hit_the_road: 50       # Hit the Road
+  j_duo: 50                # The Duo
+  j_trio: 50               # The Trio
+  j_family: 50             # The Family
+  j_order: 50              # The Order
+  j_tribe: 50              # The Tribe
+  j_stuntman: 50           # Stuntman
+  j_invisible: 50          # Invisible Joker
+  j_brainstorm: 50         # Brainstorm
+  j_satellite: 50          # Satellite
+  j_shoot_the_moon: 50     # Shoot the Moon
+  j_drivers_license: 50    # Driver's License
+  j_cartomancer: 50        # Cartomancer
+  j_astronomer: 50         # Astronomer
+  j_burnt: 50              # Burnt Joker
+  j_bootstraps: 50         # Bootstraps
+  j_caino: 50              # Caino
+  j_triboulet: 50          # Triboulet
+  j_yorick: 50             # Yorick
+  j_chicot: 50             # Chicot
+  j_perkeo: 50             # Perkeo
+
+tarots:
+  c_fool: 50               # The Fool
+  c_magician: 50           # The Magician
+  c_high_priestess: 50     # The High Priestess
+  c_empress: 50            # The Empress
+  c_emperor: 50            # The Emperor
+  c_heirophant: 50         # The Hierophant
+  c_lovers: 50             # The Lovers
+  c_chariot: 50            # The Chariot
+  c_justice: 50            # Justice
+  c_hermit: 50             # The Hermit
+  c_wheel_of_fortune: 50   # The Wheel of Fortune
+  c_strength: 50           # Strength
+  c_hanged_man: 50         # The Hanged Man
+  c_death: 50              # Death
+  c_temperance: 50         # Temperance
+  c_devil: 50              # The Devil
+  c_tower: 50              # The Tower
+  c_star: 50               # The Star
+  c_moon: 50               # The Moon
+  c_sun: 50                # The Sun
+  c_judgement: 50          # Judgement
+  c_world: 50              # The World
+
+planets:
+  c_mercury: 50    # Mercury
+  c_venus: 50      # Venus
+  c_earth: 50      # Earth
+  c_mars: 50       # Mars
+  c_jupiter: 50    # Jupiter
+  c_saturn: 50     # Saturn
+  c_uranus: 50     # Uranus
+  c_neptune: 50    # Neptune
+  c_pluto: 50      # Pluto
+  c_planet_x: 50   # Planet X
+  c_ceres: 50      # Ceres
+  c_eris: 50       # Eris
+
+spectrals:
+  c_familiar: 50      # Familiar
+  c_grim: 50          # Grim
+  c_incantation: 50   # Incantation
+  c_talisman: 50      # Talisman
+  c_aura: 50          # Aura
+  c_wraith: 50        # Wraith
+  c_sigil: 50         # Sigil
+  c_ouija: 50         # Ouija
+  c_ectoplasm: 50     # Ectoplasm
+  c_immolate: 50      # Immolate
+  c_ankh: 50          # Ankh
+  c_deja_vu: 50       # Deja Vu
+  c_hex: 50           # Hex
+  c_trance: 50        # Trance
+  c_medium: 50        # Medium
+  c_cryptid: 50       # Cryptid
+  c_soul: 50          # The Soul
+  c_black_hole: 50    # Black Hole
+
+vouchers:
+  v_overstock_norm: 50    # Overstock
+  v_overstock_plus: 50    # Overstock Plus
+  v_clearance_sale: 50    # Clearance Sale
+  v_liquidation: 50       # Liquidation
+  v_hone: 50              # Hone
+  v_glow_up: 50           # Glow Up
+  v_reroll_surplus: 50    # Reroll Surplus
+  v_reroll_glut: 50       # Reroll Glut
+  v_crystal_ball: 50      # Crystal Ball
+  v_omen_globe: 50        # Omen Globe
+  v_telescope: 50         # Telescope
+  v_observatory: 50       # Observatory
+  v_grabber: 50           # Grabber
+  v_nacho_tong: 50        # Nacho Tong
+  v_wasteful: 50          # Wasteful
+  v_recyclomancy: 50      # Recyclomancy
+  v_tarot_merchant: 50    # Tarot Merchant
+  v_tarot_tycoon: 50      # Tarot Tycoon
+  v_planet_merchant: 50   # Planet Merchant
+  v_planet_tycoon: 50     # Planet Tycoon
+  v_seed_money: 50        # Seed Money
+  v_money_tree: 50        # Money Tree
+  v_blank: 50             # Blank
+  v_antimatter: 50        # Antimatter
+  v_magic_trick: 50       # Magic Trick
+  v_illusion: 50          # Illusion
+  v_hieroglyph: 50        # Hieroglyph
+  v_petroglyph: 50        # Petroglyph
+  v_directors_cut: 50     # Director's Cut
+  v_retcon: 50            # Retcon
+  v_paint_brush: 50       # Paint Brush
+  v_palette: 50           # Palette
+
+packs:
+  p_arcana_normal_1: 50      # Arcana Pack
+  p_arcana_normal_2: 50      # Arcana Pack
+  p_arcana_normal_3: 50      # Arcana Pack
+  p_arcana_normal_4: 50      # Arcana Pack
+  p_arcana_jumbo_1: 50       # Jumbo Arcana Pack
+  p_arcana_jumbo_2: 50       # Jumbo Arcana Pack
+  p_arcana_mega_1: 50        # Mega Arcana Pack
+  p_arcana_mega_2: 50        # Mega Arcana Pack
+  p_celestial_normal_1: 50   # Celestial Pack
+  p_celestial_normal_2: 50   # Celestial Pack
+  p_celestial_normal_3: 50   # Celestial Pack
+  p_celestial_normal_4: 50   # Celestial Pack
+  p_celestial_jumbo_1: 50    # Jumbo Celestial Pack
+  p_celestial_jumbo_2: 50    # Jumbo Celestial Pack
+  p_celestial_mega_1: 50     # Mega Celestial Pack
+  p_celestial_mega_2: 50     # Mega Celestial Pack
+  p_standard_normal_1: 50    # Standard Pack
+  p_standard_normal_2: 50    # Standard Pack
+  p_standard_normal_3: 50    # Standard Pack
+  p_standard_normal_4: 50    # Standard Pack
+  p_standard_jumbo_1: 50     # Jumbo Standard Pack
+  p_standard_jumbo_2: 50     # Jumbo Standard Pack
+  p_standard_mega_1: 50      # Mega Standard Pack
+  p_standard_mega_2: 50      # Mega Standard Pack
+  p_buffoon_normal_1: 50     # Buffoon Pack
+  p_buffoon_normal_2: 50     # Buffoon Pack
+  p_buffoon_jumbo_1: 50      # Jumbo Buffoon Pack
+  p_buffoon_mega_1: 50       # Mega Buffoon Pack
+  p_spectral_normal_1: 50    # Spectral Pack
+  p_spectral_normal_2: 50    # Spectral Pack
+  p_spectral_jumbo_1: 50     # Jumbo Spectral Pack
+  p_spectral_mega_1: 50      # Mega Spectral Pack
+
+tags:
+  tag_uncommon: 50     # Uncommon Tag
+  tag_rare: 50         # Rare Tag
+  tag_negative: 50     # Negative Tag
+  tag_foil: 50         # Foil Tag
+  tag_holo: 50         # Holographic Tag
+  tag_polychrome: 50   # Polychrome Tag
+  tag_investment: 50   # Investment Tag
+  tag_voucher: 50      # Voucher Tag
+  tag_boss: 50         # Boss Tag
+  tag_standard: 50     # Standard Tag
+  tag_charm: 50        # Charm Tag
+  tag_meteor: 50       # Meteor Tag
+  tag_buffoon: 50      # Buffoon Tag
+  tag_handy: 50        # Handy Tag
+  tag_garbage: 50      # Garbage Tag
+  tag_ethereal: 50     # Ethereal Tag
+  tag_coupon: 50       # Coupon Tag
+  tag_double: 50       # Double Tag
+  tag_juggle: 50       # Juggle Tag
+  tag_d_six: 50        # D6 Tag
+  tag_top_up: 50       # Top-up Tag
+  tag_skip: 50         # Skip Tag
+  tag_orbital: 50      # Orbital Tag
+  tag_economy: 50      # Economy Tag

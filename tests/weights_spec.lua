@@ -4,6 +4,7 @@ local base = {
 	Strategy = dofile("bot/strategy.lua"), Policy = dofile("bot/policy.lua"),
 	Simulator = dofile("bot/simulator.lua"),
 }
+base = dofile("bot/expert.lua").modules(base)   -- MultiBots' Expert decides
 local weighted = {}
 for key, value in pairs(base) do weighted[key] = value end
 weighted.Weights = dofile("bot/weights.lua")

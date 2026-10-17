@@ -31,7 +31,7 @@ end
 
 local function require_dependencies()
 	if not dependencies then error("MultiBots generator dependencies have not been configured") end
-	for _, name in ipairs({ "PRNG", "Cards", "Evaluator", "Policy", "Simulator" }) do
+	for _, name in ipairs({ "PRNG", "Cards", "Evaluator", "Policy", "Simulator", "Expert" }) do
 		if not dependencies[name] then error("MultiBots generator is missing dependency " .. name) end
 	end
 	return dependencies
@@ -63,7 +63,9 @@ function Generator.build(options)
 		banned_jokers = options.banned_jokers or {},
 		deck = options.deck or "Red Deck",
 		weights = options.weights,
-	}, deps)
+	}, deps.Expert.modules(deps))
+	-- the strategy weights the run played with
+	final_state.weights = deps.Weights and deps.Weights.copy(options.weights) or options.weights
 
 	return {
 		seed = seed,

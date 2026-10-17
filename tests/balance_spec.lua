@@ -7,6 +7,7 @@ local modules = {
 	Policy = dofile("bot/policy.lua"),
 	Simulator = dofile("bot/simulator.lua"),
 }
+modules = dofile("bot/expert.lua").modules(modules)   -- MultiBots' Expert decides
 
 local minimum_ante_one_clears = { easy = 200, normal = 240, hard = 250, expert = 260 }
 local maximum_progression_failures = { easy = 60, normal = 35, hard = 30, expert = 25 }

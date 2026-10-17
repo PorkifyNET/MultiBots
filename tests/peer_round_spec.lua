@@ -94,6 +94,9 @@ Peer.dependencies = {
 			end
 			return { keys = {}, supported_keys = {} }
 		end,
+		shop_phase = function(state, keys)
+			return Peer.dependencies.Simulator.visit_shop(state, keys)
+		end,
 		set_ante = function(state, ante) state.ante = ante end,
 		plan_skips = function() return planned_skips end,
 	snapshot = function() return {} end,

@@ -6,6 +6,7 @@ local modules = {
 	Policy = dofile("bot/policy.lua"),
 	Simulator = dofile("bot/simulator.lua"),
 }
+modules = dofile("bot/expert.lua").modules(modules)   -- MultiBots' Expert decides
 
 local snapshots = modules.Simulator.run({
 	seed = "FULLRUN",

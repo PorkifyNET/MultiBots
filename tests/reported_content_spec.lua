@@ -4,6 +4,7 @@ local modules = {
 	Strategy = dofile("bot/strategy.lua"), Policy = dofile("bot/policy.lua"),
 	Simulator = dofile("bot/simulator.lua"), Order = dofile("bot/order.lua"),
 }
+modules = dofile("bot/expert.lua").modules(modules)   -- MultiBots' Expert decides
 
 local catalog = modules.Content.build({ Joker = {
 	{ key = "j_madness" }, { key = "j_joker" }, { key = "j_mp_taxes" },

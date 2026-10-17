@@ -4,6 +4,7 @@ local modules = {
 	Evaluator = dofile("bot/evaluator.lua"), Strategy = dofile("bot/strategy.lua"),
 	Policy = dofile("bot/policy.lua"), Simulator = dofile("bot/simulator.lua"),
 }
+modules = dofile("bot/expert.lua").modules(modules)   -- MultiBots' Expert decides
 local Fitness = dofile("training/fitness.lua")
 local Evolution = dofile("training/evolution.lua")
 local Opponents = dofile("training/opponents.lua")

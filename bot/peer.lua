@@ -802,7 +802,7 @@ local function build_replay(message)
 		death_on_round_loss = options.death_on_round_loss ~= false,
 		stake = tonumber(message.stake) or (G.GAME and tonumber(G.GAME.stake)) or 1,
 		ruleset = options.ruleset or (Peer.pending and Peer.pending.ruleset),
-	}, Peer.dependencies)
+	}, Peer.dependencies.Expert.modules(Peer.dependencies))
 	Peer.dependencies.Order.clear()
 	-- A new game: the host's tag queue is read again at the bot's first Ante.
 	Peer.blind_tag_seed, Peer.blind_tags_trusted = nil, nil
@@ -1011,24 +1011,17 @@ local function visit_current_shop(next_round_is_pvp)
 			end
 			return report
 		end
-		local report = process(keys, "visit")
-		local simulator = Peer.dependencies.Simulator
-		local rerolls_this_shop = 0
-		while Peer.dependencies.Order.generate_reroll and simulator.should_reroll do
-			local reroll_cost = simulator.next_reroll_cost
-				and simulator.next_reroll_cost(Peer.run, rerolls_this_shop) or (5 + rerolls_this_shop)
-			if not simulator.should_reroll(Peer.run, report, reroll_cost) then break end
-			local reroll_keys, reroll_error = Peer.dependencies.Order.generate_reroll(Peer.run)
-			if reroll_keys and simulator.pay_reroll(Peer.run, reroll_cost) then
-				rerolls_this_shop = rerolls_this_shop + 1
-				report = process(reroll_keys, "reroll")
-			else
+		-- The shop and its rerolls (the reroll_step hook decides; the Order's
+		-- private queues give the reroll's cards).
+		Peer.dependencies.Simulator.shop_phase(Peer.run, keys, {
+			reroll_keys = Peer.dependencies.Order.generate_reroll,
+			visit = process,
+			on_reroll_failed = function(reroll_error)
 				sendWarnMessage("ORDER_REROLL generation failed: " .. tostring(reroll_error), "MULTIBOTS")
-				break
-			end
-		end
+			end,
+		})
 	else
-		Peer.dependencies.Simulator.visit_shop(Peer.run)
+		Peer.dependencies.Simulator.shop_phase(Peer.run)
 	end
 	return true
 end
