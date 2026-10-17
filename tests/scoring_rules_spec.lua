@@ -1,4 +1,4 @@
--- balatro-brain patch: hand scoring follows the game's evaluate_play
+-- Hand scoring follows the game's evaluate_play
 -- (functions/state_events.lua, card.lua). Every expected number below is worked
 -- out by hand from the vanilla rules.
 local Cards = dofile("bot/cards.lua")

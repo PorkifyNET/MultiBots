@@ -202,11 +202,17 @@ local INDIVIDUAL = {
 	rank_chips_mult = true, face_chips = true, face_mult = true, first_face_xmult = true,
 	chance_suit_xmult = true, rank_scaling_chips = true, played_card_chip_growth = true,
 	rotating_suit_xmult = true,
+	rank_xmult = true,   -- group C jokers
 }
 local HELD = { held_rank_mult = true, held_rank_xmult = true, held_lowest_rank_mult = true }
 local NOT_MAIN = { rarity_xmult = true }
 for kind in pairs(INDIVIDUAL) do NOT_MAIN[kind] = kind ~= "rank_scaling_chips" or nil end
 for kind in pairs(HELD) do NOT_MAIN[kind] = true end
+-- group B jokers: The Idol scores per card; Lucky Cat grows per card and
+-- gives its X Mult in joker_main.
+INDIVIDUAL.rotating_card_xmult = true
+INDIVIDUAL.lucky_scaling_xmult = true
+NOT_MAIN.rotating_card_xmult = true
 
 local function contains(state, requested)
 	return state.contained[requested] == true
@@ -390,6 +396,31 @@ apply_adapter = function(effect, state, joker_key, joker_index, resolving, resol
 		state.mult = state.mult + (state.context.joker_state[joker_key] or effect.initial or 0)
 	elseif effect.kind == "non_pvp_xmult" and not state.context.is_pvp then
 		apply_xmult(state, effect.amount)
+	-- group B jokers
+	elseif effect.kind == "discard_rank_xmult" then
+		-- Hit the Road: X Mult gained from Jacks discarded this round.
+		apply_xmult(state, math.max(1, state.context.joker_state[joker_key] or effect.initial or 1))
+	elseif effect.kind == "lucky_scaling_xmult" then
+		-- Lucky Cat: its X Mult including this hand's expected Lucky triggers.
+		apply_xmult(state, math.max(1, state.context.joker_state[joker_key] or effect.initial or 1)
+			+ (state.growth[joker_key] or 0))
+	-- vanilla Jokers group A: Glass Joker, Campfire and Caino score their grown
+	-- XMult, Flash Card its grown Mult (card.lua joker_main, copied by Blueprint).
+	elseif effect.kind == "glass_shatter_xmult" or effect.kind == "sell_scaling_xmult"
+		or effect.kind == "face_destroy_xmult" then
+		apply_xmult(state, math.max(1, state.context.joker_state[joker_key] or effect.initial or 1))
+	elseif effect.kind == "reroll_scaling_mult" then
+		state.mult = state.mult + math.max(0, state.context.joker_state[joker_key] or effect.initial or 0)
+	-- group C jokers
+	elseif effect.kind == "skip_scaling_xmult" then
+		-- Throwback: 1 + skips * extra (card.lua set_cost / joker_main).
+		apply_xmult(state, 1 + (state.context.blinds_skipped or 0) * (effect.amount or 0.25))
+	elseif effect.kind == "discard_count_xmult" then
+		apply_xmult(state, state.context.joker_state[joker_key] or effect.initial or 1)
+	elseif effect.kind == "enhancement_steal_xmult" then
+		-- Vampire's gain from this hand (context.before) is already in its X Mult.
+		apply_xmult(state, (state.context.joker_state[joker_key] or effect.initial or 1)
+			+ ((state.vampire_gain or {})[joker_key] or 0))
 	elseif effect.kind == "copy_joker" then
 		local target_index
 		if effect.mode == "leftmost" then
@@ -488,7 +519,9 @@ local function apply_individual(effect, state, card, own_key)
 		if card == state.first_face then apply_xmult(state, effect.amount) end
 	elseif kind == "chance_suit_xmult" then
 		if suit_matches(state, card, effect.suit) then
-			apply_xmult(state, 1 + (effect.chance or 0.5) * ((effect.amount or 1) - 1))
+			-- Oops! All 6s doubles the chance (G.GAME.probabilities.normal).
+			apply_xmult(state, 1 + math.min(1, (effect.chance or 0.5)
+				* (state.context.probability_multiplier or 1)) * ((effect.amount or 1) - 1))
 		end
 	elseif kind == "rotating_suit_xmult" then
 		local target = state.context.joker_targets and state.context.joker_targets[own_key]
@@ -498,9 +531,28 @@ local function apply_individual(effect, state, card, own_key)
 		if own_key and rank_of(card) == effect.rank then
 			state.growth[own_key] = (state.growth[own_key] or 0) + effect.amount
 		end
+	elseif kind == "rank_xmult" then
+		-- Triboulet (group C jokers): X Mult per scoring card of the ranks.
+		if has_rank(effect.ranks, rank_of(card)) then apply_xmult(state, effect.amount) end
 	elseif kind == "played_card_chip_growth" then
 		-- Hiker: +5 permanent chips on every trigger, seen by the card's later triggers.
 		state.hiker[card] = (state.hiker[card] or 0) + (effect.amount or 5)
+	-- group B jokers
+	elseif kind == "rotating_card_xmult" then
+		-- The Idol: X2 for each scored card of this round's rank and suit
+		-- (get_id and is_suit, so Wild cards and Smeared Joker count).
+		local target = state.context.idol_card
+		if target and rank_of(card) == target.rank and suit_matches(state, card, target.suit) then
+			apply_xmult(state, effect.amount)
+		end
+	elseif kind == "lucky_scaling_xmult" then
+		-- Lucky Cat: +X0.25 each time a scored Lucky card triggers (1 in 5 Mult or
+		-- 1 in 15 money, per trigger), at its expected rate; a copy does not grow it.
+		if own_key and card.enhancement == "m_lucky" then
+			local odds = state.context.probability_multiplier or 1
+			local chance = 1 - (1 - math.min(1, odds / 5)) * (1 - math.min(1, odds / 15))
+			state.growth[own_key] = (state.growth[own_key] or 0) + (effect.amount or 0.25) * chance
+		end
 	end
 end
 
@@ -601,6 +653,39 @@ function Evaluator.evaluate(cards, levels, jokers, context)
 		hiker = {},
 		dollars = 0,
 	}
+	-- group C jokers: Vampire (context.before, not copied) takes the
+	-- enhancement of every enhanced, non-debuffed scoring card before it scores,
+	-- left to right; a Midas Mask to its left has already made the face cards
+	-- Gold. The cards score without it and get it back after this evaluation.
+	local stolen, enhanced = nil, nil
+	for index = 1, #jokers do
+		local own = effects[jokers[index]]
+		if own and (own.kind == "face_gold_conversion" or own.kind == "enhancement_steal_xmult") then
+			if not enhanced then
+				enhanced = {}
+				for _, card in ipairs(scoring) do enhanced[card] = card.enhancement ~= nil end
+			end
+			if own.kind == "face_gold_conversion" then
+				for _, card in ipairs(scoring) do
+					if scoring_face(state, card) then enhanced[card] = true end
+				end
+			else
+				stolen = stolen or {}
+				state.vampire_gain = state.vampire_gain or {}
+				local count = 0
+				for _, card in ipairs(scoring) do
+					if not card.debuff and enhanced[card] then
+						enhanced[card] = false
+						if stolen[card] == nil then stolen[card] = card.enhancement or false end
+						count = count + 1
+					end
+				end
+				state.vampire_gain[jokers[index]] = (state.vampire_gain[jokers[index]] or 0)
+					+ count * (own.amount or 0.1)
+			end
+		end
+	end
+	for card in pairs(stolen or {}) do card.enhancement = nil end
 	for _, card in ipairs(scoring) do
 		if scoring_face(state, card) then state.first_face = card; break end
 	end
@@ -620,6 +705,8 @@ function Evaluator.evaluate(cards, levels, jokers, context)
 			elseif effect and effect.kind == "first_scoring_retrigger"
 				and scoring_index <= (effect.cards or 2) then
 				repetitions = repetitions + (effect.repetitions or 1)
+			elseif effect and effect.kind == "limited_retrigger" then
+				repetitions = repetitions + 1   -- Seltzer (group C jokers)
 			end
 		end
 		repetitions = math.max(0, repetitions)
@@ -727,6 +814,7 @@ function Evaluator.evaluate(cards, levels, jokers, context)
 		if joker == "j_mystic_summit" and ((context and context.discards_left) or 0) == 0 then state.mult = state.mult + 15 end
 	end
 	end
+	for card, enhancement in pairs(stolen or {}) do card.enhancement = enhancement or nil end
 
 	return {
 		name = name,
@@ -735,7 +823,7 @@ function Evaluator.evaluate(cards, levels, jokers, context)
 		mult = state.mult,
 		score = math.max(0, math.floor(state.chips * state.mult)),
 		scoring_cards = scoring,
-		-- balatro-brain patch: what the simulator applies after the hand.
+		-- what the simulator applies after the hand.
 		contained = contained,
 		card_repetitions = card_repetition_counts,
 		dollars = state.dollars,

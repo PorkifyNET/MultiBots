@@ -1,4 +1,4 @@
--- balatro-brain patch: Uncommon/Rare Tags under The Order give the bot its
+-- Uncommon/Rare Tags under The Order give the bot its
 -- Joker from its own private Order queues instead of nothing.
 local function hash(value)
 	local result = 0
