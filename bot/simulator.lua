@@ -1765,6 +1765,7 @@ local function prepare_round_jokers(state, round_name)
 	-- every Blueprint/Brainstorm copying them (setting_blind, card.lua).
 	for _, entry in ipairs(joker_slots(state, {
 		round_joker_generation = true, round_tarot_generation = true, round_stone_card = true,
+		round_sealed_card = true,
 	})) do
 		local key, effect = entry.slot, entry.effect
 		if effect.kind == "round_joker_generation" then
@@ -1800,7 +1801,8 @@ local function prepare_round_jokers(state, round_name)
 					suit = state.Cards.suits[stream:integer(1, #state.Cards.suits)],
 					rank = stream:integer(2, 14), seal = seals[stream:integer(1, #seals)],
 				}
-				state.Cards.refresh(card, ":certificate:" .. state.ante .. ":" .. state.round .. ":" .. generated)
+				state.Cards.refresh(card, ":certificate:" .. state.ante .. ":" .. state.round .. ":" .. generated
+					.. (entry.copy and (":" .. key) or ""))
 				state.deck[#state.deck + 1] = card
 				state.cards_added = state.cards_added + 1
 				adjust_owned_jokers(state, "deck_add_scaling_xmult", 1)
