@@ -39,7 +39,7 @@ local function full_control(state)
 end
 
 local blind_amounts = { 300, 800, 2000, 5000, 11000, 20000, 35000, 50000 }
--- balatro-brain patch: vanilla get_blind_amount (misc_functions.lua), including
+-- Vanilla get_blind_amount (misc_functions.lua), including
 -- the Green (scaling 2) and Purple (scaling 3) Stake tables and Antes past 8.
 local scaled_blind_amounts = {
 	[2] = { 300, 900, 2600, 8000, 20000, 36000, 60000, 100000 },
@@ -101,6 +101,8 @@ local function apply_deck_back(state, deck_name)
 		state.deck_vouchers, state.deck_consumables = { "v_crystal_ball" }, { "c_fool", "c_fool" }
 	elseif normalized == "zodiac deck" or normalized == "b_zodiac" then
 		state.deck_vouchers = { "v_tarot_merchant", "v_planet_merchant", "v_overstock_norm" }
+	elseif normalized == "ghost deck" or normalized == "b_ghost" then
+		state.deck_consumables = { "c_hex" }   -- game.lua b_ghost config consumables
 	end
 	if normalized:find("abandoned", 1, true) or normalized == "b_abandoned" then
 		for index = #state.deck, 1, -1 do
@@ -244,6 +246,48 @@ local function initialize_joker(state, key)
 	state.joker_state[key] = effect and effect.initial or 0
 end
 
+-- vanilla Jokers group A: playing cards destroyed and cards sold.
+-- Caino gains X1 per destroyed face card (card.lua calculate_joker
+-- cards_destroyed / remove_playing_cards; Card:is_face: not debuffed, every
+-- card with Pareidolia, a Stone card otherwise not). Glass Joker gains X0.75
+-- per Glass Card that counts (`glass`: shattered ones, or the ones The Hanged
+-- Man destroys, using_consumeable). Neither is copied by Blueprint.
+local function note_cards_destroyed(state, cards, glass)
+	local all_faces, faces = false, 0
+	for _, key in ipairs(state.jokers or {}) do
+		local effect = state.joker_effects[key]
+		if effect and effect.kind == "all_faces" then all_faces = true end
+	end
+	for _, card in ipairs(cards or {}) do
+		if not card.debuff and (all_faces
+			or (card.enhancement ~= "m_stone" and card.rank >= 11 and card.rank <= 13)) then
+			faces = faces + 1
+		end
+	end
+	for _, key in ipairs(state.jokers or {}) do
+		local effect = state.joker_effects[key]
+		if effect and effect.kind == "face_destroy_xmult" and faces > 0 then
+			state.joker_state[key] = math.max(1, state.joker_state[key] or effect.initial or 1)
+				+ faces * (effect.amount or 1)
+		elseif effect and effect.kind == "glass_shatter_xmult" and (glass or 0) > 0 then
+			state.joker_state[key] = math.max(1, state.joker_state[key] or effect.initial or 1)
+				+ glass * (effect.amount or 0.75)
+		end
+	end
+end
+
+-- Campfire gains X0.25 for every card sold, Joker or consumable, except
+-- itself (G.FUNCS.sell_card: selling_card for the other Jokers; not copied).
+local function note_card_sold(state, sold_key)
+	for _, key in ipairs(state.jokers or {}) do
+		local effect = state.joker_effects[key]
+		if key ~= sold_key and effect and effect.kind == "sell_scaling_xmult" then
+			state.joker_state[key] = math.max(1, state.joker_state[key] or effect.initial or 1)
+				+ (effect.amount or 0.25)
+		end
+	end
+end
+
 -- the game's poll_edition (common_events.lua). Guaranteed
 -- (no Negative): foil 50%, holo 35%, polychrome 15%. Otherwise 4% / 2% / 0.6%
 -- times rate * mod; with `negative` allowed (shop and pack Jokers) 0.3% * mod
@@ -284,12 +328,16 @@ local function joker_sell_value(state, key)
 		+ ((state.joker_extra_value or {})[key] or 0)
 end
 
+local sold_joker_rules   -- group B jokers (defined with their rules below)
+
 -- Diet Cola creates a Double Tag when sold (card.lua Card:sell_card / calculate_joker selling_self).
-local function note_joker_sold(state, key)
+local function note_joker_sold(state, key, replacing)
+	note_card_sold(state, key)   -- Campfire
 	local sold_effect = state.joker_effects[key]
 	if sold_effect and sold_effect.kind == "double_tag_on_sell" then
 		state.double_tags = (state.double_tags or 0) + 1
 	end
+	sold_joker_rules(state, key, replacing)
 end
 
 -- Hook target_step: an external policy can override which cards a deck tool targets.
@@ -474,9 +522,13 @@ local function apply_deck_tool(state, tool, stream, choose_targets)
 	end
 	if tool.effect == "remove" then
 		for _, card in ipairs(targets) do remove_card(state.deck, card) end
+		local glass = 0   -- Glass Joker counts The Hanged Man's Glass Cards
+		for _, card in ipairs(targets) do if card.enhancement == "m_glass" then glass = glass + 1 end end
+		note_cards_destroyed(state, targets, glass)
 	elseif tool.effect == "immolate" then
 		-- Immolate destroys 5 random cards of the hand (pseudoshuffle 'immolate').
 		for index = 1, math.min(tool.count or 5, #in_hand - 1) do remove_card(state.deck, in_hand[index]) end
+		note_cards_destroyed(state, { unpack(in_hand, 1, math.min(tool.count or 5, #in_hand - 1)) }, 0)
 		state.money = state.money + 20
 	elseif tool.effect == "rank" then
 		for index, card in ipairs(targets) do
@@ -534,6 +586,42 @@ local function apply_deck_tool(state, tool, stream, choose_targets)
 		for _, card in ipairs(targets) do card.edition = poll_edition(stream, true) end
 	elseif tool.effect == "seal" then
 		for _, card in ipairs(targets) do card.seal = tool.seal or seals[stream:integer(1, #seals)] end
+	elseif tool.effect == "create_cards" and #in_hand > 1 then
+		-- Familiar, Grim, Incantation: one random card of the hand is destroyed,
+		-- then `count` cards of a random listed rank and suit are added, each
+		-- with a random enhancement other than Stone (card.lua use_consumeable).
+		remove_card(state.deck, in_hand[stream:integer(1, #in_hand)])
+		local ranks = tool.ranks or { 14 }
+		for index = 1, tool.count or 1 do
+			local card = {
+				rank = ranks[stream:integer(1, #ranks)],
+				suit = state.Cards.suits[stream:integer(1, #state.Cards.suits)],
+				enhancement = enhancements[stream:integer(1, #enhancements)],
+			}
+			state.Cards.refresh(card, ":" .. tool.key .. ":" .. state.ante .. ":" .. state.round .. ":" .. index
+				.. ":" .. #state.deck)
+			state.deck[#state.deck + 1] = card
+			state.cards_added = state.cards_added + 1
+			adjust_owned_jokers(state, "deck_add_scaling_xmult", 1)
+		end
+	elseif (tool.effect == "hand_suit" or tool.effect == "hand_rank") and #in_hand > 1 then
+		-- Sigil: every card in hand becomes one random suit. Ouija: one random
+		-- rank, and the hand size drops by 1.
+		local suit = tool.effect == "hand_suit"
+			and ({ "Spades", "Hearts", "Diamonds", "Clubs" })[stream:integer(1, 4)] or nil
+		local rank = tool.effect == "hand_rank" and stream:integer(2, 14) or nil
+		for index, card in ipairs(in_hand) do
+			card.suit = suit or card.suit
+			card.rank = rank or card.rank
+			state.Cards.refresh(card, ":" .. tool.key .. ":" .. state.ante .. ":" .. state.round .. ":" .. index)
+		end
+		state.hand_size_bonus = (state.hand_size_bonus or 0) + (tool.hand_size or 0)
+	elseif tool.effect == "level_all_hands" then
+		-- Black Hole: +1 level to every poker hand, secret hands included.
+		for _, name in ipairs(planet_names) do state.levels[name] = (state.levels[name] or 1) + 1 end
+		for _, name in ipairs({ "Flush House", "Flush Five" }) do
+			state.levels[name] = (state.levels[name] or 1) + 1
+		end
 	elseif tool.effect == "money" then
 		local gain
 		if tool.sell_value then
@@ -597,7 +685,11 @@ local economy_joker_kinds = {
 	held_face_money = true,
 	extra_interest = true,
 	single_discard_destroy = true,
+	unique_planet_money = true,   -- group C jokers
 }
+
+-- group B jokers
+economy_joker_kinds.boss_scaling_money = true
 
 local function has_economy_joker(state)
 	for _, key in ipairs(state.jokers or {}) do
@@ -640,7 +732,28 @@ local function joker_available(state, key)
 		and not (state.pool_flags and state.pool_flags[effect.requires_pool_flag]) then return false end
 	if effect and effect.blocks_pool_flag
 		and state.pool_flags and state.pool_flags[effect.blocks_pool_flag] then return false end
+	-- group C jokers: enhancement_gate (get_current_pool) keeps Golden Ticket out
+	-- of the pool until the deck has a Gold card.
+	if effect and effect.enhancement_gate then
+		local gated = true
+		for _, card in ipairs(state.deck or {}) do
+			if card.enhancement == effect.enhancement_gate then gated = false; break end
+		end
+		if gated then return false end
+	end
 	return allows_duplicates(state) or not has_value(state.jokers or {}, key)
+end
+
+-- a Joker with an enhancement_gate (game.lua P_CENTERS, Glass Joker) is in
+-- the pool only while a playing card has that enhancement (get_current_pool).
+local function enhancement_gate_open(state, key)
+	local effect = state.joker_effects and state.joker_effects[key]
+	local wanted = effect and effect.pool_enhancement
+	if not wanted then return true end
+	for _, card in ipairs(state.deck or {}) do
+		if card.enhancement == wanted then return true end
+	end
+	return false
 end
 
 local function rarity_matches(value, wanted)
@@ -673,7 +786,9 @@ local function queued_tag_joker(state, reward, index)
 	local eligible = {}
 	for _, joker in ipairs(state.joker_pool or {}) do
 		if not state.banned[joker.key] and joker_available(state, joker.key)
-			and rarity_matches(joker.rarity, reward.rarity) then
+			and rarity_matches(joker.rarity, reward.rarity)
+			-- Legendaries come only from The Soul (group A and C jokers).
+			and tonumber(joker.rarity) ~= 4 and enhancement_gate_open(state, joker.key) then
 			eligible[#eligible + 1] = joker
 		end
 	end
@@ -700,8 +815,9 @@ end
 -- their share of the draw and, as in a live game, give nothing the bot can
 -- use ("j_unsupported"). Returns key, edition.
 -- game.lua P_CENTERS has 61 / 64 / 20; Multiplayer Attrition bans the Uncommon
--- Mr. Bones, Luchador and Matador (gamemodes/attrition.lua).
-local vanilla_jokers_by_rarity = { 61, 61, 20 }
+-- Mr. Bones, Luchador and Matador (gamemodes/attrition.lua). The 5 Legendaries
+-- only come from The Soul (forced rarity 4).
+local vanilla_jokers_by_rarity = { 61, 61, 20, 5 }
 local function roll_vanilla_joker(state, stream, taken, forced_rarity)
 	local rarity_roll = stream:next()
 	local rarity = forced_rarity or (rarity_roll > 0.95 and 3 or (rarity_roll > 0.7 and 2 or 1))
@@ -710,7 +826,9 @@ local function roll_vanilla_joker(state, stream, taken, forced_rarity)
 		if inferred_rarity(joker) == rarity then
 			supported = supported + 1
 			if not state.banned[joker.key] and not (taken and taken[joker.key])
-				and joker_available(state, joker.key) then eligible[#eligible + 1] = joker.key end
+				and joker_available(state, joker.key) and enhancement_gate_open(state, joker.key) then
+				eligible[#eligible + 1] = joker.key
+			end
 		end
 	end
 	local unsupported = math.max(0, (vanilla_jokers_by_rarity[rarity] or 0) - supported)
@@ -776,6 +894,7 @@ local function clear_joker(state, key)
 	state.joker_state[key] = nil
 	if state.joker_targets then state.joker_targets[key] = nil end
 	if state.joker_extra_value then state.joker_extra_value[key] = nil end
+	if state.joker_counters then state.joker_counters[key] = nil end   -- group C jokers (Yorick)
 end
 
 local scaling_kinds = {
@@ -795,6 +914,9 @@ local scaling_kinds = {
 	blind_scaling_xmult = true,
 	opponent_sale_mult = true,
 	avoid_most_played_xmult = true,
+	-- group C jokers
+	enhancement_steal_xmult = true,
+	discard_count_xmult = true,
 }
 
 local power_kinds = {
@@ -819,7 +941,14 @@ local power_kinds = {
 	blind_scaling_xmult = true,
 	avoid_most_played_xmult = true,
 	chance_xmult_money = true,
+	-- group C jokers
+	limited_retrigger = true,
+	rank_xmult = true,
+	skip_scaling_xmult = true,
 }
+
+-- group B jokers
+scaling_kinds.lucky_scaling_xmult = true
 
 local function shop_priority(state, offer)
 	local value = offer.utility or 0
@@ -1000,6 +1129,7 @@ local function sell_unsupported_jokers(state)
 		if unsupported_keys[key] then
 			local sell_value = joker_sell_value(state, key)
 			state.money = state.money + sell_value
+			note_card_sold(state, key)   -- Campfire
 			clear_joker(state, key)
 			table.remove(state.jokers, index)
 			record_decision(state, {
@@ -1180,6 +1310,8 @@ local function joker_context(state, cards, hands_left, discards_left, full_hand)
 		boss_min_cards = state.boss_blind == "bl_psychic" and 5 or nil,
 		boss_halve_base = state.boss_blind == "bl_flint" or nil,
 		probability_multiplier = has_joker_kind(state, "double_probabilities") and 2 or 1,
+		idol_card = state.idol_card,   -- group B jokers
+		blinds_skipped = state.skips,   -- group C jokers (Throwback)
 	}
 end
 
@@ -1210,7 +1342,18 @@ local xmult_effects = {
 	blind_scaling_xmult = true,
 	avoid_most_played_xmult = true,
 	chance_xmult_money = true,
+	-- group C jokers
+	limited_retrigger = true,
+	rank_xmult = true,
+	skip_scaling_xmult = true,
+	enhancement_steal_xmult = true,
+	discard_count_xmult = true,
 }
+
+-- group B jokers
+xmult_effects.discard_rank_xmult = true
+xmult_effects.rotating_card_xmult = true
+xmult_effects.lucky_scaling_xmult = true
 
 local function same_order(left, right)
 	if #(left or {}) ~= #(right or {}) then return false end
@@ -1424,7 +1567,7 @@ local function generate_spectral(state, source, label)
 	if #(state.consumables or {}) >= (state.consumable_limit or 2) then return false end
 	local eligible = {}
 	for _, tool in ipairs(state.deck_tools or {}) do
-		if tool.set == "Spectral" then eligible[#eligible + 1] = tool end
+		if tool.set == "Spectral" and not tool.hidden then eligible[#eligible + 1] = tool end
 	end
 	if #eligible == 0 then return false end
 	local stream = state.rng:fork(table.concat({
@@ -1437,6 +1580,237 @@ local function generate_spectral(state, source, label)
 	record_decision(state, { type = "create_consumable", key = choice.key, source = source,
 		ante = state.ante, round = state.current_round or state.round })
 	return true
+end
+
+---------------------------------------------------------------------------
+-- group B jokers: Hit the Road, The Idol, Invisible Joker, Luchador, Lucky
+-- Cat, Matador, Mr. Bones, Perkeo, Rocket (card.lua calculate_joker,
+-- calculate_dollar_bonus; functions/state_events.lua end_round).
+---------------------------------------------------------------------------
+
+-- Bosses whose ability the simulator applies (a disabled one does nothing).
+local simulated_boss_abilities = {
+	bl_hook = true, bl_club = true, bl_goad = true, bl_head = true, bl_window = true,
+	bl_manacle = true, bl_psychic = true, bl_pillar = true, bl_needle = true,
+	bl_water = true, bl_flint = true, bl_tooth = true, bl_plant = true,
+}
+
+-- Blind:disable for the simulated Bosses: no more debuffs, The Manacle's hand
+-- size comes back, The Needle's and The Water's limits are never applied.
+local function disable_boss(state, source)
+	local boss = state.boss_blind
+	if not boss then return false end
+	if boss == "bl_manacle" then state.round_hand_size = (state.round_hand_size or 0) + 1 end
+	state.boss_blind = nil
+	state.boss_disabled = boss
+	for _, card in ipairs(state.deck or {}) do card.debuff = nil end
+	record_decision(state, { type = "disable_boss", key = source, boss = boss,
+		ante = state.ante, round = state.current_round or state.round })
+	return true
+end
+
+-- Selling a Joker (context.selling_self, never seen by Blueprint/Brainstorm):
+-- Luchador disables the current Boss Blind; Invisible Joker, after 2 rounds,
+-- copies a random other Joker if the slots hold it (copy_card drops Negative).
+-- `replacing`: the sale makes room for a purchase in the same slot, which the
+-- copy would take in the game, so no copy is made.
+sold_joker_rules = function(state, key, replacing)
+	local effect = state.joker_effects[key]
+	if not effect then return end
+	if effect.kind == "sell_disable_boss" then
+		disable_boss(state, key)
+	elseif effect.kind == "sell_duplicate_joker" and not replacing
+		and (tonumber(state.joker_state[key]) or 0) >= (effect.rounds or 2) then
+		local others, skipped = {}, false
+		for _, other in ipairs(state.jokers) do
+			if other == key and not skipped then skipped = true else others[#others + 1] = other end
+		end
+		if #others > 0 and #state.jokers <= state.joker_limit then
+			local stream = state.rng:fork(table.concat({
+				"invisible", tostring(state.ante), tostring(state.round), tostring(state.shop_visits),
+			}, ":"))
+			local copied = others[stream:integer(1, #others)]
+			state.jokers[#state.jokers + 1] = copied
+			if state.joker_state[copied] == nil then initialize_joker(state, copied) end
+			record_decision(state, { type = "create_joker", key = copied, source = key,
+				ante = state.ante, round = state.current_round or state.round })
+		end
+	end
+end
+
+-- The sell action of a ready Invisible Joker with another Joker to copy (the
+-- Expert sells it as soon as it can).
+local function ready_invisible_action(state, actions)
+	if #state.jokers < 2 or #state.jokers > state.joker_limit then return nil end
+	for position, action in ipairs(actions) do
+		local effect = action.type == "sell_joker" and state.joker_effects[action.key]
+		if effect and effect.kind == "sell_duplicate_joker"
+			and (tonumber(state.joker_state[action.key]) or 0) >= (effect.rounds or 2) then
+			return position
+		end
+	end
+	return nil
+end
+
+-- Hook boss_disable_step: whether to sell Luchador once the Boss Blind is set.
+-- ctx.actions = { keep, sell_joker }. The Expert sells it against any Boss
+-- whose ability the simulator applies.
+function Simulator.defaults.boss_disable_step(_, ctx)
+	return simulated_boss_abilities[ctx.boss] and 2 or 1
+end
+
+local function offer_boss_disable(state)
+	if not state.boss_blind then return end
+	local slot
+	for index, key in ipairs(state.jokers) do
+		local effect = state.joker_effects[key]
+		if effect and effect.kind == "sell_disable_boss" then slot = index; break end
+	end
+	if not slot then return end
+	local key = state.jokers[slot]
+	local actions = {
+		{ type = "keep" },
+		{ type = "sell_joker", index = slot, key = key, value = joker_sell_value(state, key) },
+	}
+	local index = decide(state, "boss_disable_step", { boss = state.boss_blind, actions = actions })
+	local action = actions[index]
+	if not action then error("boss_disable_step returned an invalid action index " .. tostring(index)) end
+	if action.type ~= "sell_joker" then return end
+	state.money = state.money + action.value
+	record_decision(state, { type = "sell_joker", key = key, value = action.value,
+		source = "boss_disable", ante = state.ante, round = state.round })
+	note_joker_sold(state, key)
+	clear_joker(state, key)
+	table.remove(state.jokers, slot)
+end
+
+-- The Idol's card for the round (reset_idol_card): a random non-Stone card of the deck.
+local function pick_idol_card(state)
+	if not has_joker_kind(state, "rotating_card_xmult") then return end
+	local valid = {}
+	for _, card in ipairs(state.deck or {}) do
+		if card.enhancement ~= "m_stone" then valid[#valid + 1] = card end
+	end
+	state.idol_card = { rank = 14, suit = "Spades" }
+	if #valid == 0 then return end
+	local stream = state.rng:fork("idol:" .. tostring(state.ante) .. ":" .. tostring(state.round))
+	local card = valid[stream:integer(1, #valid)]
+	state.idol_card = { rank = card.rank, suit = card.suit }
+end
+
+-- Hit the Road (context.discard, not copied): X0.5 per discarded Jack that is not debuffed.
+local function discard_rank_jokers(state, discarded)
+	for _, key in ipairs(state.jokers) do
+		local effect = state.joker_effects[key]
+		if effect and effect.kind == "discard_rank_xmult" then
+			for _, card in ipairs(discarded or {}) do
+				if card.rank == effect.rank and card.enhancement ~= "m_stone" and not card.debuff then
+					state.joker_state[key] = math.max(effect.initial or 1, tonumber(state.joker_state[key]) or 0)
+						+ (effect.amount or 0.5)
+				end
+			end
+		end
+	end
+end
+
+-- After a played hand: Lucky Cat keeps this hand's growth; Matador pays $8
+-- for every hand that triggers the Boss Blind (Blind.triggered: The Flint, a
+-- debuffed scoring card, a hand The Psychic debuffs), also for every copy.
+local function hand_trigger_jokers(state, result)
+	local seen = {}
+	for _, key in ipairs(state.jokers) do
+		local effect = state.joker_effects[key]
+		if effect and effect.kind == "lucky_scaling_xmult" and not seen[key] then
+			seen[key] = true
+			local growth = result.growth and result.growth[key] or 0
+			if growth > 0 then
+				state.joker_state[key] = math.max(effect.initial or 1, tonumber(state.joker_state[key]) or 0) + growth
+			end
+		end
+	end
+	if not state.boss_blind then return end
+	local triggered = result.debuffed_hand == true or state.boss_blind == "bl_flint"
+	if not triggered then
+		for _, card in ipairs(result.scoring_cards or {}) do
+			if card.debuff then triggered = true; break end
+		end
+	end
+	if not triggered then return end
+	for _, entry in ipairs(joker_slots(state, { boss_trigger_money = true })) do
+		local amount = entry.effect.amount or 8
+		state.money = state.money + amount
+		record_decision(state, { type = "joker_income", key = entry.slot, value = amount,
+			hand = result.name, ante = state.ante, round = state.current_round or state.round })
+	end
+end
+
+-- end_round (context.end_of_round, not copied): Mr. Bones saves a lost Blind
+-- with at least 25% of its chips and is destroyed; Rocket's payout grows by $2
+-- after a Boss Blind; Invisible Joker counts the round; Hit the Road resets.
+-- Returns true when Mr. Bones saved the round.
+local function end_of_round_jokers(state, session)
+	for _, key in ipairs(state.jokers) do
+		local effect = state.joker_effects[key]
+		if effect and effect.kind == "boss_scaling_money" and session.round_name == "Boss" then
+			state.joker_state[key] = (tonumber(state.joker_state[key]) or effect.initial or 1) + (effect.amount or 2)
+		elseif effect and effect.kind == "sell_duplicate_joker" then
+			state.joker_state[key] = (tonumber(state.joker_state[key]) or 0) + 1
+		elseif effect and effect.kind == "discard_rank_xmult" then
+			state.joker_state[key] = effect.initial or 1
+		end
+	end
+	if not (session.target and session.cumulative < session.target) then return false end
+	for index, key in ipairs(state.jokers) do
+		local effect = state.joker_effects[key]
+		if effect and effect.kind == "prevent_death"
+			and session.cumulative / session.target >= (effect.threshold or 0.25) then
+			table.remove(state.jokers, index)
+			clear_joker(state, key)
+			record_decision(state, { type = "destroy_joker", key = key, reason = "prevent_death",
+				ante = state.ante, round = state.current_round or state.round })
+			return true
+		end
+	end
+	return false
+end
+
+-- Rocket's end-of-round payout (calculate_dollar_bonus; never copied).
+local function rocket_income(state)
+	local income = 0
+	for _, key in ipairs(state.jokers) do
+		local effect = state.joker_effects[key]
+		if effect and effect.kind == "boss_scaling_money" then
+			local amount = tonumber(state.joker_state[key]) or effect.initial or 1
+			income = income + amount
+			record_decision(state, { type = "joker_income", key = key, value = amount,
+				ante = state.ante, round = state.current_round or state.round })
+		end
+	end
+	return income
+end
+
+-- Perkeo (context.ending_shop, also every copy): a Negative copy of a random
+-- held consumable; a Negative consumable brings its own slot.
+local function shop_end_jokers(state)
+	for index, entry in ipairs(joker_slots(state, { shop_end_negative_consumable = true })) do
+		if #state.consumables == 0 then return end
+		local stream = state.rng:fork(table.concat({
+			"perkeo", tostring(state.ante), tostring(state.shop_visits), tostring(index),
+		}, ":"))
+		local copy = copy_map(state.consumables[stream:integer(1, #state.consumables)])
+		copy.negative = true
+		state.consumable_limit = state.consumable_limit + 1
+		state.consumables[#state.consumables + 1] = copy
+		record_decision(state, { type = "create_consumable", key = copy.key, source = entry.slot,
+			edition = "negative", ante = state.ante, round = state.current_round or state.round })
+	end
+end
+
+-- A consumable leaves the slots: a Negative one takes its slot with it.
+local function release_consumable(state, consumable)
+	if consumable and consumable.negative then
+		state.consumable_limit = math.max(0, state.consumable_limit - 1)
+	end
 end
 
 local function update_scaling_jokers(state, result, played_cards)
@@ -1526,6 +1900,17 @@ local function update_scaling_jokers(state, result, played_cards)
 					record_decision(state, { type = "destroy_playing_card", key = key,
 						ante = state.ante, round = state.current_round or state.round })
 				end
+			elseif effect.kind == "enhancement_steal_xmult" then
+				-- group C jokers: Vampire (context.before, not copied), in Joker
+				-- order, so a Midas Mask to its left has made the faces Gold.
+				local count = 0
+				for _, card in ipairs(result.scoring_cards or {}) do
+					if card.enhancement and not card.debuff then
+						card.enhancement = nil
+						count = count + 1
+					end
+				end
+				state.joker_state[key] = (state.joker_state[key] or effect.initial or 1) + count * (effect.amount or 0.1)
 			end
 		end
 	end
@@ -1541,7 +1926,7 @@ local function update_scaling_jokers(state, result, played_cards)
 	end
 end
 
--- balatro-brain patch: things the game does around a scored hand.
+-- Things the game does around a scored hand.
 -- Space Joker (context.before): 1 in 4 to level the hand before it scores.
 local function roll_hand_level_jokers(state, hand_name)
 	local leveled = false
@@ -1592,6 +1977,7 @@ local function after_scoring(state, result)
 			type = "scoring_income", value = dollars, ante = state.ante, round = state.current_round or state.round,
 		})
 	end
+	local shattered = {}
 	for index, card in ipairs(result.scoring_cards or {}) do
 		if card.enhancement == "m_glass" then
 			local stream = state.rng:fork(table.concat({
@@ -1600,6 +1986,7 @@ local function after_scoring(state, result)
 			local _, glass_odds = glass_rules(state)
 			if stream:next() < 1 / glass_odds then
 				remove_card(state.deck, card)
+				shattered[#shattered + 1] = card
 				record_decision(state, {
 					type = "glass_shattered", card = tostring(card.id or card.rank),
 					ante = state.ante, round = state.current_round or state.round,
@@ -1607,6 +1994,8 @@ local function after_scoring(state, result)
 			end
 		end
 	end
+	-- Caino and Glass Joker (context.cards_destroyed, glass_shattered).
+	if #shattered > 0 then note_cards_destroyed(state, shattered, #shattered) end
 end
 
 local function update_discard_jokers(state, discarded)
@@ -1632,10 +2021,23 @@ local function update_discard_jokers(state, discarded)
 				record_decision(state, { type = "joker_income", key = key, value = amount,
 					ante = state.ante, round = state.current_round or state.round })
 			end
+		elseif effect and effect.kind == "discard_count_xmult" then
+			-- group C jokers: Yorick (context.discard, each card, not copied).
+			state.joker_counters = state.joker_counters or {}
+			for _ = 1, #(discarded or {}) do
+				local left = state.joker_counters[key] or effect.discards or 23
+				if left <= 1 then
+					state.joker_counters[key] = effect.discards or 23
+					state.joker_state[key] = (state.joker_state[key] or effect.initial or 1) + (effect.amount or 1)
+				else
+					state.joker_counters[key] = left - 1
+				end
+			end
 		elseif effect and effect.kind == "single_discard_destroy"
 			and #discarded == 1 and not state.joker_round_flags[key] then
 			state.joker_round_flags[key] = true
 			remove_card(state.deck, discarded[1])
+			note_cards_destroyed(state, { discarded[1] }, 0)   -- Caino
 			state.money = state.money + (effect.amount or 3)
 			record_decision(state, { type = "destroy_playing_card", key = key,
 				value = effect.amount or 3, ante = state.ante, round = state.current_round or state.round })
@@ -1661,6 +2063,7 @@ local function update_discard_jokers(state, discarded)
 			})
 		end
 	end
+	discard_rank_jokers(state, discarded)   -- group B jokers
 	-- a discarded Purple Seal card creates a Tarot if there
 	-- is room (Card:calculate_seal, context.discard, card.lua).
 	for index, card in ipairs(discarded or {}) do
@@ -1857,6 +2260,7 @@ local function prepare_round_jokers(state, round_name)
 		})
 		end
 	end
+	pick_idol_card(state)   -- group B jokers
 	if round_name == "PvP" then state.pending_opponent_sells = 0 end
 end
 
@@ -1881,7 +2285,11 @@ local function apply_played_hand_income(state, result)
 		elseif effect.kind == "scoring_enhancement_money" then
 			local income = 0
 			for _, card in ipairs(result.scoring_cards or {}) do
-				if card.enhancement == effect.enhancement then income = income + (effect.amount or 4) end
+				if card.enhancement == effect.enhancement then
+					-- group C jokers: Golden Ticket pays per trigger (context.individual).
+					local triggers = effect.per_trigger and ((result.card_repetitions or {})[card] or 1) or 1
+					income = income + (effect.amount or 4) * triggers
+				end
 			end
 			state.money = state.money + income
 			if income > 0 then record_decision(state, { type = "joker_income", key = key,
@@ -1940,10 +2348,28 @@ local function apply_played_hand_income(state, result)
 	end
 end
 
+-- group C jokers: the Planet cards used this run, by key (G.GAME.consumeable_usage).
+local function note_planet_used(state, key)
+	if not key then return end
+	state.planet_keys_used = state.planet_keys_used or {}
+	state.planet_keys_used[key] = true
+end
+
 local function end_round_joker_income(state, result)
 	local income = 0
 	for _, key in ipairs(state.jokers) do
 		local effect = state.joker_effects[key]
+		if effect and effect.kind == "unique_planet_money" then
+			-- group C jokers: Satellite (calculate_dollar_bonus).
+			local unique = 0
+			for _ in pairs(state.planet_keys_used or {}) do unique = unique + 1 end
+			local amount = unique * (effect.amount or 1)
+			income = income + amount
+			if amount > 0 then
+				record_decision(state, { type = "joker_income", key = key, value = amount,
+					ante = state.ante, round = state.current_round or state.round })
+			end
+		end
 		if effect and effect.kind == "deck_rank_money" then
 			local count = 0
 			for _, card in ipairs(state.deck) do
@@ -1974,6 +2400,7 @@ local function end_round_joker_income(state, result)
 			end
 		end
 	end
+	income = income + rocket_income(state)   -- group B jokers
 	return income
 end
 
@@ -1981,6 +2408,64 @@ local function create_levels()
 	local levels = {}
 	for _, name in ipairs(planet_names) do levels[name] = 1 end
 	return levels
+end
+
+local function editionless_joker_slots(state)
+	local slots = {}
+	for index, key in ipairs(state.jokers or {}) do
+		if not state.joker_editions[key] then slots[#slots + 1] = index end
+	end
+	return slots
+end
+
+-- can_use_consumeable (card.lua) for the Spectrals that need a Joker or more
+-- than one card in hand; nil for every other consumable.
+local function spectral_usable(state, consumable)
+	if consumable.set ~= "Spectral" then return nil end
+	local effect = consumable.effect
+	if effect == "generate_joker" then return #state.jokers < state.joker_limit end
+	if effect == "duplicate_joker" then
+		return #state.jokers > 0 and state.joker_limit > 1 and #state.jokers < state.joker_limit
+	end
+	if effect == "polychrome_joker" or effect == "negative_joker" then
+		return #editionless_joker_slots(state) > 0
+	end
+	if effect == "create_cards" or effect == "hand_suit" or effect == "hand_rank" then
+		return #(state.deck or {}) > 1
+	end
+	return nil
+end
+
+-- share of the vanilla Jokers of `rarity` the run simulates (the rest give
+-- nothing, see roll_vanilla_joker).
+local function joker_rarity_share(state, rarity)
+	local supported = 0
+	for _, joker in ipairs(state.joker_pool or {}) do
+		if inferred_rarity(joker) == rarity and not state.banned[joker.key] then supported = supported + 1 end
+	end
+	local total = math.max(supported, vanilla_jokers_by_rarity[rarity] or 0)
+	return total > 0 and supported / total or 0
+end
+
+-- Spectral value adjusted for what using it costs right now: Jokers the card
+-- destroys, money Wraith takes, Ectoplasm's growing hand size loss. A card
+-- that cannot be used is worth nothing but its sale.
+local function spectral_offer_utility(state, offer)
+	local utility = offer.utility or 0
+	local usable = spectral_usable(state, offer)
+	if usable == false then return 0 end
+	local jokers = #(state.jokers or {})
+	if offer.effect == "generate_joker" and offer.rarity then
+		utility = utility * joker_rarity_share(state, offer.rarity)
+		if offer.clear_money then utility = utility - math.max(0, state.money or 0) * 0.5 end
+	elseif offer.effect == "duplicate_joker" or offer.effect == "polychrome_joker" then
+		utility = utility - (jokers - 1) * 17
+	elseif offer.effect == "negative_joker" then
+		utility = utility - ((state.ecto_minus or 1) - 1) * 12
+	elseif offer.effect == "hand_rank" then
+		utility = utility - math.max(0, 8 - current_hand_size(state)) * 4
+	end
+	return math.max(0, utility)
 end
 
 local function deck_tool_offer(state, tool)
@@ -1999,6 +2484,9 @@ local function deck_tool_offer(state, tool)
 				state, last, state.strategy_plan
 			) or last.utility or 0
 		end
+	end
+	if offer.set == "Spectral" and spectral_usable(state, offer) ~= nil then
+		offer.utility = spectral_offer_utility(state, offer)
 	end
 	if offer.effect == "add" then
 		offer.utility = offer.utility + (has_value(state.jokers, "j_hologram") and 12 or 0)
@@ -2075,6 +2563,22 @@ local function remember_consumable(state, consumable)
 	state.last_consumable = copy_map(consumable)
 end
 
+-- Ankh and Hex destroy every Joker but the one in slot `keep` (card.lua
+-- use_consumeable: start_dissolve, not a sale). Returns the kept key.
+local function destroy_jokers_except(state, keep, source)
+	local kept = state.jokers[keep]
+	for index = #state.jokers, 1, -1 do
+		if index ~= keep then
+			local key = table.remove(state.jokers, index)
+			-- a duplicate of the kept Joker shares its per-key state
+			if key ~= kept then clear_joker(state, key) end
+			record_decision(state, { type = "destroy_joker", key = key, source = source,
+				ante = state.ante, round = state.current_round or state.round })
+		end
+	end
+	return kept
+end
+
 local apply_consumable
 apply_consumable = function(state, consumable, source)
 	local modeled_utility = consumable_utility(state, consumable)
@@ -2083,6 +2587,7 @@ apply_consumable = function(state, consumable, source)
 		state.levels[consumable.hand] = (state.levels[consumable.hand] or 1) + 1
 		state.planets_used = state.planets_used + 1
 		adjust_owned_jokers(state, "planet_scaling_xmult", 1)
+		note_planet_used(state, consumable.key)
 	elseif consumable.type == "deck_tool" then
 		local stream = state.rng:fork(
 			"held_consumable:" .. state.ante .. ":" .. state.round .. ":" .. consumable.key
@@ -2115,13 +2620,15 @@ apply_consumable = function(state, consumable, source)
 					utility = picked.utility })
 				state.planets_used = state.planets_used + 1
 				adjust_owned_jokers(state, "planet_scaling_xmult", 1)
+				note_planet_used(state, picked.key)
 			end
 		elseif consumable.effect == "generate_joker" then
 			-- Judgement makes a Joker like the shop does
 			-- (rarity 70/25/5, edition) and needs a free Joker slot (card.lua
 			-- use_consumeable / can_use_consumeable).
+			-- Wraith and The Soul force a Rare / Legendary Joker.
 			if #state.jokers < state.joker_limit then
-				local key, edition = roll_vanilla_joker(state, stream:fork("judgement"))
+				local key, edition = roll_vanilla_joker(state, stream:fork("judgement"), nil, consumable.rarity)
 				for _, joker in ipairs(state.joker_pool or {}) do
 					if joker.key == key and joker_available(state, key) then
 						local picked = copy_map(joker)
@@ -2133,6 +2640,33 @@ apply_consumable = function(state, consumable, source)
 						install_joker(state, picked, full_control(state))   -- strict
 						break
 					end
+				end
+			end
+			-- Wraith then sets money to $0 (ease_dollars(-G.GAME.dollars)).
+			if consumable.clear_money then state.money = 0 end
+		elseif consumable.effect == "duplicate_joker" then
+			-- Ankh: copies a random Joker and destroys all others; the copy
+			-- loses Negative. Needs a free Joker slot (Card:check_use).
+			if #state.jokers > 0 and #state.jokers < state.joker_limit then
+				local kept = destroy_jokers_except(state, stream:integer(1, #state.jokers), consumable.key)
+				state.jokers[#state.jokers + 1] = kept
+			end
+		elseif consumable.effect == "polychrome_joker" or consumable.effect == "negative_joker" then
+			-- Hex: a random Joker without an edition becomes Polychrome and every
+			-- other Joker is destroyed. Ectoplasm: it becomes Negative and the hand
+			-- size drops by 1, then 2, 3... on later uses (G.GAME.ecto_minus).
+			local slots = editionless_joker_slots(state)
+			if #slots > 0 then
+				local slot = slots[stream:integer(1, #slots)]
+				local key = state.jokers[slot]
+				if consumable.effect == "polychrome_joker" then
+					set_joker_edition(state, key, "polychrome")
+					destroy_jokers_except(state, slot, consumable.key)
+				else
+					set_joker_edition(state, key, "negative")
+					state.ecto_minus = state.ecto_minus or 1
+					state.hand_size_bonus = (state.hand_size_bonus or 0) - state.ecto_minus
+					state.ecto_minus = state.ecto_minus + 1
 				end
 			end
 		elseif consumable.effect == "repeat_consumable" then
@@ -2187,6 +2721,8 @@ local function consumable_usable(state, consumable)
 	if consumable.type == "planet" then return true end
 	if consumable.type ~= "deck_tool" then return false end
 	if consumable.effect == "repeat_consumable" then return state.last_consumable ~= nil end
+	local spectral_rule = spectral_usable(state, consumable)
+	if spectral_rule ~= nil then return spectral_rule end
 	if consumable.effect == "generate_joker" and full_control(state) then
 		-- Real Judgement rule: needs a free Joker slot.
 		return #state.jokers < state.joker_limit
@@ -2240,8 +2776,10 @@ end
 
 local function sell_consumable(state, index, source)
 	local sold = table.remove(state.consumables, index)
+	release_consumable(state, sold)   -- group B jokers
 	local value = consumable_sell_value(sold)
 	state.money = state.money + value
+	note_card_sold(state)   -- Campfire
 	record_decision(state, {
 		type = "sell_consumable", key = sold.key, value = value, ante = state.ante, round = state.round,
 		source = source,
@@ -2252,6 +2790,7 @@ end
 local function run_consumable_action(state, action, source)
 	if action.type == "use" then
 		local consumable = table.remove(state.consumables, action.index)
+		release_consumable(state, consumable)   -- group B jokers
 		apply_consumable(state, consumable, source)
 	elseif action.type == "sell_consumable" then
 		sell_consumable(state, action.index, source)
@@ -2384,7 +2923,8 @@ end
 
 
 local function random_joker(pool, stream)
-	local rarity_weights = { [1] = 0.70, [2] = 0.25, [3] = 0.05, [4] = 0.003 }
+	-- Legendary Jokers never appear in a shop (only The Soul creates them).
+	local rarity_weights = { [1] = 0.70, [2] = 0.25, [3] = 0.05, [4] = 0 }
 	local total = 0
 	for _, joker in ipairs(pool) do total = total + (rarity_weights[inferred_rarity(joker)] or 0.05) end
 	local roll = stream:next() * total
@@ -2540,10 +3080,30 @@ local function pack_candidates(state, key, spec, instance)
 	elseif spec.family == "standard" then
 		for index = 1, spec.choices do raw[#raw + 1] = random_standard_card(state, stream, index) end
 	end
+	-- create_card with `soulable` (common_events.lua): each card of an Arcana or
+	-- Spectral Pack is The Soul with a 0.3% roll, each card of a Celestial or
+	-- Spectral Pack Black Hole. Its own stream keeps the other draws unchanged.
+	if spec.family == "arcana" or spec.family == "celestial" or spec.family == "spectral" then
+		local hidden = {}
+		for _, tool in ipairs(state.deck_tools or {}) do
+			if tool.hidden and consumable_available(state, tool.key) then hidden[tool.key] = tool end
+		end
+		local soul_stream = state.rng:fork("pack_soul:" .. state.ante .. ":" .. state.round .. ":" .. key
+			.. ":" .. tostring(instance or 1))
+		for index = 1, spec.choices do
+			local forced
+			if spec.family ~= "celestial" and soul_stream:next() > 0.997 then forced = hidden.c_soul or forced end
+			if spec.family ~= "arcana" and soul_stream:next() > 0.997 then forced = hidden.c_black_hole or forced end
+			if forced then
+				hidden[forced.key] = nil
+				raw[math.min(index, #raw + 1)] = forced
+			end
+		end
+	end
 
 	local candidates = {}
 	for _, item in ipairs(raw) do
-		if spec.family == "celestial" then
+		if spec.family == "celestial" and not item.set then
 			candidates[#candidates + 1] = {
 				type = "planet", key = item.key, hand = item.hand, cost = 0,
 				utility = state.Strategy and state.Strategy.planet_utility(state, item.hand, state.strategy_plan) or 10,
@@ -2754,7 +3314,7 @@ local function replace_joker_in_place(state, index, choice)
 	local key = state.jokers[index]
 	local sell_value = joker_sell_value(state, key)
 	state.money = state.money + sell_value
-	note_joker_sold(state, key)
+	note_joker_sold(state, key, true)
 	clear_joker(state, key)
 	state.jokers[index] = choice.key
 	initialize_joker(state, choice.key)
@@ -2969,6 +3529,7 @@ local function apply_pack(state, pack)
 			state.levels[choice.hand] = (state.levels[choice.hand] or 1) + 1
 			state.planets_used = state.planets_used + 1
 			adjust_owned_jokers(state, "planet_scaling_xmult", 1)
+			note_planet_used(state, choice.key)
 			remember_consumable(state, choice)
 			applied = true
 		elseif choice.type == "joker" then
@@ -2983,7 +3544,8 @@ local function apply_pack(state, pack)
 			-- pack create their cards too (apply_deck_tool has no branch for them).
 			if choice.effect == "repeat_consumable" or choice.effect == "pvp_attack"
 				or choice.effect == "generate_tarot" or choice.effect == "generate_planet"
-				or choice.effect == "generate_joker" then
+				or choice.effect == "generate_joker" or choice.effect == "duplicate_joker"
+				or choice.effect == "polychrome_joker" or choice.effect == "negative_joker" then
 				applied = apply_consumable(state, choice, "pack")
 			else
 				apply_deck_tool(state, choice, state.rng:fork("pack_use:" .. state.ante .. ":" .. state.round .. ":" .. choice.key), true)
@@ -3475,6 +4037,9 @@ function Simulator.defaults.shop_step(state, ctx)
 		session.use_cursor = position and cursor.cursor or nil
 		if position then return position end
 	end
+	-- group B jokers: a ready Invisible Joker is sold for its copy.
+	local invisible = ready_invisible_action(state, ctx.actions)
+	if invisible then return invisible end
 	-- 2. The old loop condition: no log entry, no shop_stream call.
 	if visible_offer_count(session.offers) == 0 or session.purchases >= 4 then return 1, { silent = true } end
 	-- 3.-5. The old purchase decision.
@@ -3575,7 +4140,7 @@ local function visit_shop(state, ordered_keys)
 		elseif #state.deck_tools > 0 or #state.pack_pool > 0 then
 			local eligible = {}
 			for _, tool in ipairs(state.deck_tools) do
-				if consumable_available(state, tool.key)
+				if consumable_available(state, tool.key) and not tool.hidden
 					and (not tool.spectral or state.ghost_deck or stream:next() < 0.2) then
 					eligible[#eligible + 1] = tool
 				end
@@ -3725,7 +4290,7 @@ local function visit_shop(state, ordered_keys)
 			table.remove(offers, choice.offer_index)
 			if choice.replace_index then
 				state.money = state.money + choice.sell_value
-				note_joker_sold(state, choice.sell_key)
+				note_joker_sold(state, choice.sell_key, true)
 				record_decision(state, {
 					type = "sell_joker",
 					key = choice.sell_key,
@@ -3740,7 +4305,9 @@ local function visit_shop(state, ordered_keys)
 			end
 			if choice.replace_consumable_index then
 				local sold = table.remove(state.consumables, choice.replace_consumable_index)
+				release_consumable(state, sold)   -- group B jokers
 				state.money = state.money + choice.sell_consumable_value
+				note_card_sold(state)   -- Campfire
 				record_decision(state, {
 					type = "sell_consumable", key = sold and sold.key or choice.sell_consumable_key,
 					value = choice.sell_consumable_value, ante = state.ante, round = state.round,
@@ -3804,6 +4371,7 @@ local function visit_shop(state, ordered_keys)
 			end
 		end
 	end
+	if not reroll_requested then shop_end_jokers(state) end   -- group B jokers
 	-- what a reroll of this shop keeps (see kept_offers).
 	state.shop_kept_offers = {}
 	for _, offer in ipairs(offers) do
@@ -3828,6 +4396,64 @@ local function visit_shop(state, ordered_keys)
 	}
 end
 
+-- vanilla Jokers group A: round and hand rules.
+-- A playing card created during a round goes into the deck and the hand
+-- (playing_card_joker_effects: Hologram).
+local function add_round_card(state, card, source)
+	state.deck[#state.deck + 1] = card
+	state.hand[#state.hand + 1] = card
+	state.cards_added = state.cards_added + 1
+	adjust_owned_jokers(state, "deck_add_scaling_xmult", 1)
+	record_decision(state, {
+		type = "create_playing_card", key = source, seal = card.seal,
+		ante = state.ante, round = state.current_round or state.round,
+	})
+end
+
+-- Chicot (setting_blind and add_to_deck, not copied) disables the Boss Blind:
+-- no effect, debuff or hand size change (Blind:disable, shared with Luchador).
+local function disable_boss_blind(state)
+	if not state.boss_blind then return end
+	for _, key in ipairs(state.jokers or {}) do
+		local effect = state.joker_effects[key]
+		if effect and effect.kind == "disable_boss" then
+			disable_boss(state, key)
+			return
+		end
+	end
+end
+
+-- DNA (context.before, copied by Blueprint): a single card played as the
+-- first hand of the round is copied into the deck and the hand, once per copy.
+local function copy_first_hand_card(state, session, played)
+	if #session.hands > 0 or #played ~= 1 then return false end
+	local copies = joker_slots(state, { first_hand_single_copy = true })
+	for index, entry in ipairs(copies) do
+		local card = {}
+		for key, value in pairs(played[1]) do card[key] = value end
+		state.Cards.refresh(card, ":dna:" .. state.ante .. ":" .. state.round .. ":" .. index .. ":" .. #state.deck)
+		add_round_card(state, card, entry.slot)
+	end
+	return #copies > 0
+end
+
+-- Burnt Joker (context.pre_discard, copied by Blueprint): the first discard of
+-- the round levels up the discarded poker hand, once per copy. The Hook's
+-- discards do not count (context.hook).
+local function level_first_discard(state, session, discarded)
+	local entries = joker_slots(state, { first_discard_level = true })
+	if #entries == 0 or #discarded == 0 then return end
+	local hand = state.Evaluator.evaluate(discarded, state.levels, state.jokers,
+		joker_context(state, discarded, session.hands_left, session.discards_left, state.hand)).name
+	for _, entry in ipairs(entries) do
+		state.levels[hand] = (state.levels[hand] or 1) + 1
+		record_decision(state, {
+			type = "joker_hand_level", key = entry.slot, hand = hand, value = state.levels[hand],
+			ante = state.ante, round = state.current_round or state.round,
+		})
+	end
+end
+
 local function begin_round(state, target, round_name, telemetry_name)
 	state.round = state.round + 1
 	state.current_round = telemetry_name or round_name
@@ -3849,6 +4475,8 @@ local function begin_round(state, target, round_name, telemetry_name)
 	end
 	prepare_round_jokers(state, round_name)
 	use_held_consumables(state, "cartomancer")
+	disable_boss_blind(state)   -- Chicot
+	offer_boss_disable(state)   -- group B jokers: Luchador, if the Boss is still active
 	set_boss_debuffs(state)
 	state.draw_pile = state.Cards.shuffle(state.deck, state.rng, state.ante .. ":" .. round_name, state.the_order)
 	state.hand = {}
@@ -3921,6 +4549,13 @@ local function finish_round(session)
 		end
 	end
 	expire_end_of_round_food(state)
+	-- Campfire goes back to X1 when a Boss Blind is defeated (end_of_round, not copied).
+	if session.round_name == "Boss" then
+		for _, key in ipairs(state.jokers) do
+			local effect = state.joker_effects[key]
+			if effect and effect.kind == "sell_scaling_xmult" then state.joker_state[key] = effect.initial or 1 end
+		end
+	end
 	state.round_hand_size = nil
 	if session.round_name == "Boss" then
 		-- a defeated Boss resets played_this_ante (end_round).
@@ -3945,6 +4580,7 @@ local function finish_round(session)
 				ante = state.ante, round = state.current_round })
 		end
 	end
+	local saved = end_of_round_jokers(state, session)   -- group B jokers
 	state.rounds_completed = state.rounds_completed + 1
 	session.finished = true
 	session.result = {
@@ -3958,7 +4594,8 @@ local function finish_round(session)
 		consumables_available = session.starting_consumables,
 		consumables_remaining = #(state.consumables or {}),
 		target = session.target,
-		cleared = not session.target or session.cumulative >= session.target,
+		cleared = not session.target or session.cumulative >= session.target or saved,
+		saved = saved or nil,   -- group B jokers: Mr. Bones
 	}
 	if not session.history_recorded then
 		state.round_history[#state.round_history + 1] = {
@@ -4030,6 +4667,8 @@ local function step_round(session)
 		for _, card in ipairs(selected) do state.used_cards[#state.used_cards + 1] = card end
 
 		if action.type == "discard" and session.discards_left > 0 then
+			-- Burnt Joker: discards_used <= 0
+			if session.discards_left == session.starting_discards then level_first_discard(state, session, selected) end
 			session.discards_left = session.discards_left - 1
 			session.discards_used_this_hand = session.discards_used_this_hand + 1
 			state.discarded_cards = state.discarded_cards + #selected
@@ -4086,7 +4725,8 @@ local function step_round(session)
 				end
 			end
 			local leveled = not action.result.debuffed_hand and roll_hand_level_jokers(state, action.result.name)
-			if leveled or #hooked > 0 then
+			local copied = not action.result.debuffed_hand and copy_first_hand_card(state, session, selected)   -- DNA
+			if leveled or #hooked > 0 or copied then
 				-- The hand scores at its new level (state_events.lua re-reads it),
 				-- with the cards really left in hand.
 				local rescored = state.Evaluator.evaluate(selected, state.levels, state.jokers,
@@ -4105,7 +4745,9 @@ local function step_round(session)
 				after_scoring(state, action.result)
 				apply_played_hand_income(state, action.result)
 			end
+			hand_trigger_jokers(state, action.result)   -- group B jokers
 			adjust_owned_jokers(state, "decaying_chips", -1)
+			adjust_owned_jokers(state, "limited_retrigger", -1)   -- group C jokers: Seltzer (context.after)
 			local played = {
 				side = "enemy",
 				score = score_string(session.cumulative),
@@ -4128,6 +4770,7 @@ local function step_round(session)
 				regret = diagnostic.regret, snapshot = diagnostic.snapshot, money = diagnostic.money,
 			})
 			expire_owned_jokers(state, "decaying_chips")
+			expire_owned_jokers(state, "limited_retrigger")
 		end
 		-- The game draws nothing after the last hand of a round, so held Gold
 		-- cards pay for the cards really left in hand.
@@ -4363,6 +5006,7 @@ function Simulator.pay_reroll(state, cost)
 	state.reroll_cost_total = (state.reroll_cost_total or 0) + cost
 	state.shop_rerolls = (state.shop_rerolls or 0) + 1   -- rerolls in this shop
 	state.shop_reroll_pending = true   -- the next visit_shop is this reroll
+	adjust_owned_jokers(state, "reroll_scaling_mult", 1)   -- Flash Card (reroll_shop, not copied)
 	record_decision(state, {
 		type = "reroll_shop", value = cost, ante = state.ante,
 		round = state.current_round or state.round, money = state.money,
@@ -4610,6 +5254,16 @@ function Simulator.default_targets(state, tool, stream)
 	return default, target_actions(state, tool, default, low, high, preferred_rank, preferred_suit)
 end
 Simulator.apply_deck_tool = apply_deck_tool
+-- test access to held-consumable use and its can_use rule (unit tests).
+function Simulator.apply_consumable(state, consumable, source)
+	return apply_consumable(state, consumable, source or "test")
+end
+function Simulator.consumable_usable(state, consumable)
+	return consumable_usable(state, consumable)
+end
+function Simulator.deck_tool_offer(state, tool)
+	return deck_tool_offer(state, tool)
+end
 
 function Simulator.shop_keys(state, reroll)
 	return headless_shop_keys(state, reroll)
@@ -4624,6 +5278,7 @@ function Simulator.award_blind(state, blind, result)
 		or Simulator.base_score(ante + 1, scaling)
 	local base = blind == "Boss" and 5 or (blind == "Big" and 4 or 3)
 	if blind == "Small" and (tonumber(state.stake) or 1) >= 2 then base = 0 end
+	if result.saved then base = 0 end   -- group B jokers: a round Mr. Bones saved pays no Blind reward
 	-- Held Gold cards pay at the end of the round (Red Seal and Mime repeat it),
 	-- before interest is counted at cash out.
 	-- a Blueprint/Brainstorm copying Mime retriggers too, and

@@ -377,7 +377,7 @@ assert(fast_layout.score == exact_layout.score and fast_layout.score == math.flo
 	"fast layout " .. fast_layout.score .. " vs exhaustive " .. exact_layout.score)
 
 ---------------------------------------------------------------------------
--- 4. Shop rules: rerolls and debt (functions/button_callbacks.lua).
+-- 6. Shop rules: rerolls and debt (functions/button_callbacks.lua).
 ---------------------------------------------------------------------------
 
 -- An external policy whose shop_step is `step(state, ctx, default)`.
@@ -472,5 +472,492 @@ assert(not debt_compounds.plain and debt_compounds.j_mad and not debt_compounds.
 local cash_compounds = compounds({ "j_joker", "j_jolly", "j_mad", "j_crazy", "j_zany" }, 8)
 assert(cash_compounds.j_mad and not cash_compounds.j_joker,
 	"at $8: $8 + $2 sale pays $10, $8 + $1 does not")
+
+---------------------------------------------------------------------------
+-- 7. Spectral cards (card.lua use_consumeable / can_use_consumeable).
+---------------------------------------------------------------------------
+
+local function spectral(state, key)
+	for _, tool in ipairs(state.deck_tools) do
+		if tool.key == key then
+			local held = {}
+			for field, value in pairs(tool) do held[field] = value end
+			held.type = "deck_tool"
+			return held
+		end
+	end
+	error("missing Spectral " .. key)
+end
+local function use(state, key)
+	local held = spectral(state, key)
+	assert(Simulator.consumable_usable(state, held), key .. " is usable")
+	return Simulator.apply_consumable(state, held)
+end
+
+-- all 18 vanilla Spectrals are simulated
+local keys = { "c_familiar", "c_grim", "c_incantation", "c_talisman", "c_aura", "c_wraith", "c_sigil",
+	"c_ouija", "c_ectoplasm", "c_immolate", "c_ankh", "c_deja_vu", "c_hex", "c_trance", "c_medium",
+	"c_cryptid", "c_soul", "c_black_hole" }
+local probe = new_state(base, "SPECTRAL-LIST", {})
+for _, key in ipairs(keys) do spectral(probe, key) end
+
+-- Familiar / Grim / Incantation: -1 card, +3 / +2 / +4 enhanced (never Stone) cards of their ranks.
+for key, spec in pairs({ c_familiar = { 3, 11, 13 }, c_grim = { 2, 14, 14 }, c_incantation = { 4, 2, 10 } }) do
+	local state = new_state(base, "SPECTRAL-" .. key, {}, { deck = deck_of(20, 7) })
+	assert(use(state, key))
+	assert(#state.deck == 20 - 1 + spec[1], key .. " destroys 1 card and adds " .. spec[1])
+	local added = 0
+	for _, c in ipairs(state.deck) do
+		if c.enhancement then
+			added = added + 1
+			assert(c.rank >= spec[2] and c.rank <= spec[3] and c.enhancement ~= "m_stone",
+				key .. " adds enhanced cards of its ranks")
+		end
+	end
+	assert(added == spec[1], key .. " adds " .. spec[1] .. " enhanced cards")
+end
+
+-- Talisman / Trance / Medium seal one card (through target_step).
+for key, seal in pairs({ c_talisman = "Gold", c_trance = "Blue", c_medium = "Purple" }) do
+	local state = new_state(base, "SPECTRAL-" .. key, {}, { deck = deck_of(20, 9) })
+	assert(use(state, key))
+	local sealed = 0
+	for _, c in ipairs(state.deck) do if c.seal then assert(c.seal == seal); sealed = sealed + 1 end end
+	assert(sealed == 1, key .. " seals exactly one card " .. seal)
+end
+
+-- Sigil: the hand turns to one suit. Ouija: one rank and -1 hand size.
+local sigil = new_state(base, "SPECTRAL-SIGIL", {}, { deck = deck_of(8, 5) })
+for index, c in ipairs(sigil.deck) do c.suit = base.Cards.suits[index % 4 + 1] end
+assert(use(sigil, "c_sigil"))
+for _, c in ipairs(sigil.deck) do assert(c.suit == sigil.deck[1].suit, "Sigil gives the hand one suit") end
+local ouija = new_state(base, "SPECTRAL-OUIJA", {}, { deck = deck_of(8, 5) })
+for index, c in ipairs(ouija.deck) do c.rank = index + 2 end
+assert(use(ouija, "c_ouija"))
+for _, c in ipairs(ouija.deck) do assert(c.rank == ouija.deck[1].rank, "Ouija gives the hand one rank") end
+assert(ouija.hand_size_bonus == -1, "Ouija: -1 hand size")
+
+-- Black Hole levels every hand.
+local hole = new_state(base, "SPECTRAL-HOLE", {})
+assert(use(hole, "c_black_hole"))
+for _, name in ipairs({ "High Card", "Straight Flush", "Five of a Kind", "Flush House", "Flush Five" }) do
+	assert(hole.levels[name] == 2, "Black Hole levels " .. name)
+end
+
+-- Wraith: a Rare Joker, money to $0; needs a free slot.
+local wraith = new_state(base, "SPECTRAL-WRAITH", {}, { money = 30 })
+assert(use(wraith, "c_wraith") and wraith.money == 0, "Wraith sets money to $0")
+for _, key in ipairs(wraith.jokers) do
+	for _, joker in ipairs(wraith.joker_pool) do
+		if joker.key == key then assert(joker.rarity == 3, "Wraith's Joker is Rare") end
+	end
+end
+local full = new_state(base, "SPECTRAL-FULL", { "j_joker", "j_jolly", "j_mad", "j_zany", "j_crazy" })
+assert(not Simulator.consumable_usable(full, spectral(full, "c_wraith")), "Wraith needs a free Joker slot")
+assert(not Simulator.consumable_usable(full, spectral(full, "c_ankh")), "Ankh needs a free Joker slot")
+assert(Simulator.deck_tool_offer(full, spectral(full, "c_wraith")).utility == 0, "an unusable Wraith is worth 0")
+
+-- Ankh: the remaining Joker is duplicated, the others destroyed.
+local ankh = new_state(base, "SPECTRAL-ANKH", { "j_joker", "j_jolly" })
+assert(use(ankh, "c_ankh"))
+assert(#ankh.jokers == 2 and ankh.jokers[1] == ankh.jokers[2], "Ankh leaves two copies of one Joker")
+
+-- Hex: Polychrome on an editionless Joker, all others destroyed.
+local hex = new_state(base, "SPECTRAL-HEX", { "j_joker", "j_jolly", "j_mad" })
+hex.joker_editions.j_mad = "foil"
+assert(use(hex, "c_hex"))
+assert(#hex.jokers == 1 and hex.jokers[1] ~= "j_mad" and hex.joker_editions[hex.jokers[1]] == "polychrome",
+	"Hex keeps one Polychrome Joker")
+local all_foil = new_state(base, "SPECTRAL-HEX-NONE", { "j_joker" })
+all_foil.joker_editions.j_joker = "foil"
+assert(not Simulator.consumable_usable(all_foil, spectral(all_foil, "c_hex")), "Hex needs an editionless Joker")
+
+-- Ectoplasm: Negative (+1 slot), hand size -1 then -2.
+local ecto = new_state(base, "SPECTRAL-ECTO", { "j_joker", "j_jolly" })
+local limit = ecto.joker_limit
+assert(use(ecto, "c_ectoplasm") and ecto.joker_limit == limit + 1 and ecto.hand_size_bonus == -1)
+assert(use(ecto, "c_ectoplasm") and ecto.joker_limit == limit + 2 and ecto.hand_size_bonus == -3,
+	"the second Ectoplasm costs 2 hand size")
+assert(not Simulator.consumable_usable(ecto, spectral(ecto, "c_ectoplasm")), "no editionless Joker left")
+
+-- The Soul: the default pool has simulated Legendaries (Chicot, Caino,
+-- Perkeo, Triboulet, Yorick), so it creates a Joker the run can use.
+local soul = new_state(base, "SPECTRAL-SOUL", {})
+assert(Simulator.deck_tool_offer(soul, spectral(soul, "c_soul")).utility > 0,
+	"The Soul has value with simulated Legendary Jokers")
+
+-- Ghost Deck starts with Hex.
+local ghost = Simulator.new({ seed = "SPECTRAL-GHOST", difficulty = "expert", deck = "Ghost Deck" }, base)
+assert(ghost.consumables[1] and ghost.consumables[1].key == "c_hex", "Ghost Deck starts with Hex")
+
+---------------------------------------------------------------------------
+-- 8. Vanilla Jokers group B (card.lua calculate_joker, game.lua P_CENTERS).
+---------------------------------------------------------------------------
+
+-- Live catalogs list them (runtime_only); rarities and costs from game.lua.
+local group_b_catalog = base.Content.build({ Joker = {
+	{ key = "j_hit_the_road", cost = 8, rarity = 3 }, { key = "j_idol", cost = 6, rarity = 2 },
+	{ key = "j_invisible", cost = 8, rarity = 3 }, { key = "j_luchador", cost = 5, rarity = 2 },
+	{ key = "j_lucky_cat", cost = 6, rarity = 2 }, { key = "j_matador", cost = 7, rarity = 2 },
+	{ key = "j_mr_bones", cost = 5, rarity = 2 }, { key = "j_perkeo", cost = 20, rarity = 4 },
+	{ key = "j_rocket", cost = 6, rarity = 2 }, { key = "j_blueprint", cost = 10, rarity = 3 },
+	{ key = "j_joker", cost = 2, rarity = 1 },
+} })
+assert(#group_b_catalog.jokers == 11 and not group_b_catalog.unsupported.Joker,
+	"every group B Joker has a headless adapter")
+local group_b_effects = {}
+for _, joker in ipairs(group_b_catalog.jokers) do group_b_effects[joker.key] = joker.effect end
+
+local function group_b_state(modules, seed, jokers, options)
+	local state = new_state(modules, seed, {}, options)
+	state.joker_pool = group_b_catalog.jokers
+	for key, effect in pairs(group_b_effects) do state.joker_effects[key] = effect end
+	state.jokers = jokers
+	for _, key in ipairs(jokers) do
+		local effect = state.joker_effects[key]
+		state.joker_state[key] = effect and effect.initial or 0
+	end
+	return state
+end
+
+local function evaluate_b(cards, jokers, context)
+	context.joker_effects = group_b_effects
+	context.joker_state = context.joker_state or {}
+	return base.Evaluator.evaluate(cards, {}, jokers, context)
+end
+
+-- Hit the Road: X0.5 per discarded Jack (not debuffed), reset at end of round.
+local road = group_b_state(scripted(function(_, turn)
+	if turn == 1 then return { type = "discard", indices = { 1, 2, 3 } } end
+	return { type = "play", indices = { 1 } }
+end), "ROAD", { "j_hit_the_road" })
+local road_session = Simulator.begin_round(road, nil, "Small")
+road.hand = { card(11), card(11, "Hearts"), card(11, "Clubs", { debuff = true }), card(5) }
+Simulator.step_round(road_session)
+assert(road.joker_state.j_hit_the_road == 2, "two live Jacks discarded: X2, got " .. tostring(road.joker_state.j_hit_the_road))
+assert(road_session.hands[1].hand_score == evaluate_b({ card(5) }, {}, {}).score * 2, "the X2 scores")
+Simulator.finish_round(road_session)
+assert(road.joker_state.j_hit_the_road == 1, "Hit the Road resets at the end of the round")
+
+-- The Idol: X2 per scored card of the round's rank and suit (Wild cards count).
+local idol = { idol_card = { rank = 14, suit = "Spades" } }
+local plain_pair = evaluate_b({ card(14), card(14, "Hearts") }, {}, {}).mult
+assert(evaluate_b({ card(14), card(14, "Hearts") }, { "j_idol" }, idol).mult == plain_pair * 2,
+	"only the Ace of Spades matches")
+assert(evaluate_b({ card(14), card(14, "Hearts", { enhancement = "m_wild" }) }, { "j_idol" }, idol).mult
+	== evaluate_b({ card(14), card(14, "Hearts", { enhancement = "m_wild" }) }, {}, {}).mult * 4,
+	"a Wild Ace matches the suit too")
+assert(evaluate_b({ card(14), card(14, "Hearts") }, { "j_blueprint", "j_idol" }, idol).mult == plain_pair * 4,
+	"Blueprint copies The Idol")
+local idol_state = group_b_state(base, "IDOL", { "j_idol" })
+idol_state.deck = deck_of(10, 9)
+for index = 1, 5 do idol_state.deck[index].enhancement = "m_stone" end
+Simulator.begin_round(idol_state, nil, "Small")
+assert(idol_state.idol_card.rank == 9 and idol_state.idol_card.suit == "Spades",
+	"the Idol card is a random non-Stone card of the deck")
+
+-- Lucky Cat: +X0.25 per Lucky trigger, at the expected rate 1 - (4/5)(14/15).
+local lucky_chance = 1 - (4 / 5) * (14 / 15)
+local lucky = { card(9, "Spades", { enhancement = "m_lucky" }) }
+local lucky_plain = evaluate_b(lucky, {}, {}).mult
+local lucky_result = evaluate_b(lucky, { "j_lucky_cat" }, { joker_state = { j_lucky_cat = 1.5 } })
+assert(math.abs(lucky_result.mult - lucky_plain * (1.5 + 0.25 * lucky_chance)) < 1e-9,
+	"Lucky Cat applies its X Mult with this hand's expected growth")
+assert(math.abs(lucky_result.growth.j_lucky_cat - 0.25 * lucky_chance) < 1e-12, "the growth is reported")
+local cat = group_b_state(scripted(play_first), "CAT", { "j_lucky_cat" })
+local cat_session = Simulator.begin_round(cat, nil, "Small")
+cat.hand = { card(9, "Spades", { enhancement = "m_lucky" }), card(5) }
+Simulator.step_round(cat_session)
+assert(math.abs(cat.joker_state.j_lucky_cat - (1 + 0.25 * lucky_chance)) < 1e-12, "Lucky Cat keeps the growth")
+
+-- Matador: $8 for each hand that triggers the Boss Blind, from every copy;
+-- The Hook's trigger is reset by Blind:debuff_hand, so it pays nothing.
+local function matador_money(boss, jokers, cards)
+	local state = group_b_state(scripted(function(_, turn)
+		if turn == 1 then return { type = "play", indices = { 1 } } end
+	end), "MATADOR:" .. boss, jokers, { money = 0 })
+	state.next_boss_blind = boss
+	local session = Simulator.begin_round(state, 1e9, "Boss")
+	state.hand = cards or { card(9), card(5), card(6), card(7) }
+	Simulator.step_round(session)
+	return state.money
+end
+assert(matador_money("bl_flint", { "j_matador" }) == 8, "The Flint triggers on every hand")
+assert(matador_money("bl_flint", { "j_blueprint", "j_matador" }) == 16, "Blueprint copies Matador")
+assert(matador_money("bl_psychic", { "j_matador" }) == 8, "a hand The Psychic debuffs pays")
+assert(matador_money("bl_hook", { "j_matador" }) == 0, "The Hook does not count")
+assert(matador_money("bl_club", { "j_matador" }, { card(9, "Clubs", { debuff = true }), card(5) }) == 8,
+	"a debuffed scoring card triggers the Boss")
+
+-- Mr. Bones: a lost Blind with at least 25% of its chips is saved, without the
+-- Blind reward, and Mr. Bones is destroyed.
+local function bones(score)
+	local state = group_b_state(base, "BONES", { "j_mr_bones" }, { money = 0 })
+	local session = Simulator.begin_round(state, 100, "Small")
+	session.cumulative, session.hands_left = score, 0
+	local result = Simulator.finish_round(session)
+	return state, result
+end
+local saved_state, saved_result = bones(25)
+assert(saved_result.cleared and saved_result.saved and #saved_state.jokers == 0, "25% of the chips is saved")
+assert(Simulator.award_blind(saved_state, "Small", saved_result) and saved_state.money == 0,
+	"a saved Blind pays no reward: " .. tostring(saved_state.money))
+local lost_state, lost_result = bones(24)
+assert(not lost_result.cleared and #lost_state.jokers == 1, "below 25% the run is not saved")
+
+-- Rocket: $1 at the end of the round, +$2 per defeated Boss Blind before the payout.
+local rocket = group_b_state(base, "ROCKET", { "j_rocket" }, { money = 0 })
+local rocket_result = Simulator.finish_round(Simulator.begin_round(rocket, nil, "Small"))
+assert(rocket.joker_state.j_rocket == 1, "no growth after a Small Blind")
+Simulator.award_blind(rocket, "Small", rocket_result)
+assert(rocket.money == 3 + 4 + 1, "Small $3 + 4 hands + Rocket $1: " .. tostring(rocket.money))
+rocket.money = 0
+rocket_result = Simulator.finish_round(Simulator.begin_round(rocket, nil, "Boss", "PvP"))
+assert(rocket.joker_state.j_rocket == 3, "a Boss Blind raises the payout to $3")
+assert(Simulator.award_blind(rocket, "Boss", rocket_result) and rocket.money == 5 + 4 + 3,
+	"Boss $5 + 4 hands + Rocket $3: " .. tostring(rocket.money))
+
+-- Invisible Joker: after 2 rounds the Expert sells it for a copy of another Joker.
+local invisible = group_b_state(base, "INVISIBLE", { "j_invisible", "j_joker" }, { money = 0 })
+for _ = 1, 2 do Simulator.finish_round(Simulator.begin_round(invisible, nil, "Small")) end
+assert(invisible.joker_state.j_invisible == 2, "Invisible Joker counts the rounds")
+Simulator.visit_shop(invisible, {})
+assert(#invisible.jokers == 2 and invisible.jokers[1] == "j_joker" and invisible.jokers[2] == "j_joker",
+	"the sale duplicates the other Joker: " .. table.concat(invisible.jokers, ","))
+local early = group_b_state(shop_player(function(_, ctx)
+	return find_action(ctx, { type = "sell_joker", key = "j_invisible" }) or 1
+end), "INVISIBLE-EARLY", { "j_invisible", "j_joker" })
+Simulator.visit_shop(early, {})
+assert(#early.jokers == 1, "sold before 2 rounds it copies nothing")
+
+-- Luchador: sold at the Boss Blind it disables the Boss (The Water keeps the discards).
+local function luchador(keep)
+	local modules = {}
+	for key, value in pairs(base) do modules[key] = value end
+	if keep then modules.Policy = setmetatable({ boss_disable_step = function() return 1 end }, { __index = base.Policy }) end
+	local state = group_b_state(modules, "LUCHADOR", { "j_luchador" }, { money = 0 })
+	state.next_boss_blind = "bl_water"
+	local session = Simulator.begin_round(state, 1e9, "Boss")
+	return state, session
+end
+local sold_state, sold_session = luchador(false)
+assert(#sold_state.jokers == 0 and sold_state.money == 2 and sold_state.boss_blind == nil
+	and sold_session.discards_left > 0, "the Expert sells Luchador and The Water is disabled")
+local kept_state, kept_session = luchador(true)
+assert(#kept_state.jokers == 1 and kept_state.boss_blind == "bl_water" and kept_session.discards_left == 0,
+	"a policy may keep it")
+
+-- Perkeo: at the end of the shop, a Negative copy of a held consumable (its own
+-- slot, given back when it leaves).
+local perkeo = group_b_state(base, "PERKEO", { "j_perkeo" })
+perkeo.consumables = { { type = "deck_tool", key = "c_hermit", set = "Tarot", effect = "money", multiplier = 1, cap = 20, cost = 3 } }
+local perkeo_report = Simulator.visit_shop(perkeo, {})
+assert(not perkeo_report.reroll_requested and #perkeo.consumables == 2 and perkeo.consumables[2].negative
+	and perkeo.consumable_limit == 3, "Perkeo adds a Negative copy and its slot")
+local released
+local seller = group_b_state(shop_player(function(state, ctx)
+	if #state.consumables == 2 then
+		return find_action(ctx, { type = "sell_consumable", index = 2 }) or 1
+	end
+	released = state.consumable_limit
+	return 1
+end), "PERKEO-SELL", {})
+seller.consumables = perkeo.consumables
+seller.consumable_limit = 3
+Simulator.visit_shop(seller, {})
+assert(released == 2, "selling the Negative copy gives its slot back: " .. tostring(released))
+
+---------------------------------------------------------------------------
+-- 9. Vanilla Jokers group A (card.lua calculate_joker, game.lua P_CENTERS).
+---------------------------------------------------------------------------
+
+local group_a_keys = {
+	"j_bloodstone", "j_hanging_chad", "j_glass", "j_campfire", "j_flash",
+	"j_burnt", "j_dna", "j_chicot", "j_caino",
+}
+local group_a_centers = {}
+for index, key in ipairs(group_a_keys) do group_a_centers[index] = { key = key } end
+local group_a_catalog = base.Content.build({ Joker = group_a_centers }, {})
+assert(#group_a_catalog.jokers == #group_a_keys and not group_a_catalog.unsupported.Joker,
+	"every group A Joker has a simulator adapter")
+local group_a = {}
+for _, joker in ipairs(group_a_catalog.jokers) do group_a[joker.key] = joker end
+
+-- A state whose catalog also has the group A Jokers, each at its starting value.
+local function group_a_state(modules, seed, jokers, options)
+	local state = new_state(modules, seed, jokers, options)
+	for _, joker in ipairs(group_a_catalog.jokers) do
+		state.joker_effects[joker.key] = joker.effect
+		state.joker_pool[#state.joker_pool + 1] = joker
+	end
+	for _, key in ipairs(state.jokers) do
+		local effect = state.joker_effects[key]
+		state.joker_state[key] = effect and effect.initial or 0
+	end
+	return state
+end
+
+local function score_with(jokers, cards, joker_state)
+	local effects = {}
+	for _, key in ipairs(jokers) do
+		effects[key] = group_a[key] and group_a[key].effect or nil
+	end
+	effects.j_blueprint = { kind = "copy_joker", mode = "right" }
+	return base.Evaluator.evaluate(cards, nil, jokers, { joker_effects = effects, joker_state = joker_state or {} })
+end
+
+-- Hanging Chad: the first scoring card triggers 2 more times; Blueprint copies it.
+assert(score_with({ "j_hanging_chad" }, { card(9) }).chips == 5 + 9 * 3, "Hanging Chad retriggers twice")
+assert(score_with({ "j_blueprint", "j_hanging_chad" }, { card(9) }).chips == 5 + 9 * 5,
+	"Blueprint copying Hanging Chad retriggers twice more")
+
+-- Bloodstone: 1 in 2 for X1.5 per scored Heart (expected X1.25).
+assert(math.abs(score_with({ "j_bloodstone" }, { card(9, "Hearts") }).mult - 1.25) < 1e-9,
+	"Bloodstone: expected X1.25 per Heart")
+
+-- Glass Joker / Campfire / Caino score their grown XMult, Flash Card its Mult.
+assert(score_with({ "j_glass" }, { card(9) }, { j_glass = 2.5 }).mult == 2.5, "Glass Joker scores its XMult")
+assert(score_with({ "j_blueprint", "j_campfire" }, { card(9) }, { j_campfire = 2 }).mult == 4,
+	"Blueprint copies Campfire's XMult")
+assert(score_with({ "j_flash" }, { card(9) }, { j_flash = 6 }).mult == 7, "Flash Card scores its Mult")
+
+-- Glass Joker +X0.75 and Caino +X1 per shattered Glass face card.
+local shatter = group_a_state(scripted(function() return { type = "play", indices = { 1, 2, 3, 4, 5 } } end),
+	"GLASS-JOKER", { "j_glass", "j_caino" })
+shatter.deck = deck_of(30, 13, { enhancement = "m_glass" })
+for _ = 1, 4 do   -- a few rounds, so some Glass Card shatters
+	local shatter_session = Simulator.begin_round(shatter, nil, "Small")
+	while not shatter_session.finished do Simulator.step_round(shatter_session) end
+end
+local shattered = 0
+for _, decision in ipairs(shatter.decisions) do
+	if decision.type == "glass_shattered" then shattered = shattered + 1 end
+end
+assert(shattered > 0, "the test run shatters a Glass Card")
+assert(math.abs(shatter.joker_state.j_glass - (1 + 0.75 * shattered)) < 1e-9
+	and shatter.joker_state.j_caino == 1 + shattered,
+	"Glass Joker and Caino grow per shattered Glass King: " .. tostring(shatter.joker_state.j_glass))
+
+-- Campfire: +X0.25 per card sold (not itself), back to X1 after a Boss Blind.
+local campfire = group_a_state(shop_player(function(_, ctx)
+	return find_action(ctx, { type = "sell_joker", key = "j_joker" }) or 1
+end), "CAMPFIRE", { "j_campfire", "j_joker" }, { money = 0 })
+Simulator.visit_shop(campfire, { "v_blank" })
+assert(campfire.joker_state.j_campfire == 1.25, "Campfire grows when a Joker is sold")
+local boss_session = Simulator.begin_round(campfire, nil, "Boss", "PvP")
+Simulator.finish_round(boss_session)
+assert(campfire.joker_state.j_campfire == 1, "Campfire resets when a Boss Blind is defeated")
+
+-- Flash Card: +2 Mult per reroll.
+local flash = group_a_state(base, "FLASH", { "j_flash" }, { money = 20 })
+assert(Simulator.pay_reroll(flash, 5) and Simulator.pay_reroll(flash, 6))
+assert(flash.joker_state.j_flash == 4, "Flash Card grows by 2 per reroll")
+
+-- Burnt Joker: only the first discard of the round levels its hand; Blueprint again.
+local burnt = group_a_state(scripted(function(_, turn)
+	if turn <= 2 then return { type = "discard", indices = { 1, 2 } } end
+	return { type = "play", indices = { 1 } }
+end), "BURNT", { "j_blueprint", "j_burnt" })
+burnt.deck = deck_of(20, 13)
+Simulator.step_round(Simulator.begin_round(burnt, nil, "Small"))
+assert(burnt.levels.Pair == 3, "Burnt Joker and its copy level the first discarded Pair: " .. burnt.levels.Pair)
+
+-- DNA: a single card played as the first hand is copied into deck and hand.
+local dna = group_a_state(scripted(play_first), "DNA", { "j_dna" })
+dna.deck = deck_of(20, 9)
+local dna_session = Simulator.begin_round(dna, nil, "Small")
+Simulator.step_round(dna_session)
+assert(#dna.deck == 21 and dna.cards_added == 1, "DNA copies the single played card")
+Simulator.step_round(dna_session)
+assert(#dna.deck == 21, "DNA copies only on the first hand")
+
+-- Chicot: the Boss Blind is disabled (The Needle keeps all hands, The Manacle the hand size).
+local chicot = group_a_state(scripted(play_first), "CHICOT", { "j_chicot" })
+chicot.next_boss_blind = "bl_needle"
+local chicot_session = Simulator.begin_round(chicot, 10000, "Boss")
+assert(chicot_session.hands_left == 4 and chicot.boss_blind == nil, "Chicot disables The Needle")
+local chicot_manacle = group_a_state(scripted(play_first), "CHICOT-MANACLE", { "j_chicot" })
+chicot_manacle.next_boss_blind = "bl_manacle"
+Simulator.begin_round(chicot_manacle, 10000, "Boss")
+assert(#chicot_manacle.hand == 8, "Chicot undoes The Manacle's -1 hand size")
+local needle = group_a_state(scripted(play_first), "NO-CHICOT", { "j_joker" })
+needle.next_boss_blind = "bl_needle"
+assert(Simulator.begin_round(needle, 10000, "Boss").hands_left == 1, "without Chicot The Needle allows one hand")
+
+---------------------------------------------------------------------------
+-- 10. Vanilla Jokers group C (card.lua calculate_joker, game.lua P_CENTERS).
+---------------------------------------------------------------------------
+
+local function one_hand(jokers, hand, setup, script)
+	local state = new_state(scripted(script or play_first), "GROUP-C", jokers)
+	if setup then setup(state) end
+	local session = Simulator.begin_round(state, nil, "Small")
+	state.hand = hand
+	Simulator.step_round(session)
+	return state, session.hands[1].hand_score, session
+end
+
+-- Triboulet: X2 per scoring King or Queen; Blueprint copies it.
+local _, tribo = one_hand({ "j_triboulet" }, { card(13), card(5, "Hearts") })
+assert(tribo == 15 * 2, "Triboulet doubles a King: " .. tribo)
+local _, tribo_copy = one_hand({ "j_blueprint", "j_triboulet" }, { card(13), card(5, "Hearts") })
+assert(tribo_copy == 15 * 4, "Blueprint copies Triboulet: " .. tribo_copy)
+
+-- Seltzer: retriggers played cards, one charge per hand, drunk at the last.
+local seltzer, seltzer_score = one_hand({ "j_selzer" }, { card(9), card(5, "Hearts") },
+	function(state) state.joker_state.j_selzer = 10 end)
+assert(seltzer_score == 5 + 9 + 9 and seltzer.joker_state.j_selzer == 9, "Seltzer retriggers: " .. seltzer_score)
+local drunk = one_hand({ "j_selzer" }, { card(9), card(5, "Hearts") },
+	function(state) state.joker_state.j_selzer = 1 end)
+assert(#drunk.jokers == 0, "Seltzer is gone after its last hand")
+
+-- Throwback: X0.25 per Blind skipped.
+local _, throwback = one_hand({ "j_throwback" }, { card(9), card(5, "Hearts") },
+	function(state) state.skips = 2 end)
+assert(throwback == math.floor(14 * 1.5), "Throwback with 2 skips: " .. throwback)
+
+-- Golden Ticket: $4 per scoring Gold card trigger (Red Seal pays twice).
+local ticket = one_hand({ "j_ticket" }, { card(5, "Hearts", { enhancement = "m_gold", seal = "Red" }) },
+	function(state) state.money = 0 end)
+assert(ticket.money == 8, "Golden Ticket pays per trigger: " .. ticket.money)
+
+-- Turtle Bean: +5 hand size, -1 per round, eaten at 0.
+local bean = new_state(scripted(play_first), "BEAN", { "j_turtle_bean" })
+bean.joker_state.j_turtle_bean = 5
+local bean_session = Simulator.begin_round(bean, nil, "Small")
+assert(#bean.hand == 13, "Turtle Bean draws 13 cards: " .. #bean.hand)
+Simulator.finish_round(bean_session)
+assert(bean.joker_state.j_turtle_bean == 4, "Turtle Bean loses 1 hand size per round")
+
+-- Vampire: removes the enhancements before scoring and gains X0.1 for each.
+local mult_nine, bonus_nine = card(9, "Hearts", { enhancement = "m_mult" }), card(9, "Spades", { enhancement = "m_bonus" })
+local vampire, vampire_score = one_hand({ "j_vampire" }, { mult_nine, bonus_nine },
+	function(state) state.joker_state.j_vampire = 1 end,
+	function() return { type = "play", indices = { 1, 2 } } end)
+assert(vampire_score == math.floor(28 * 2 * 1.2) and math.abs(vampire.joker_state.j_vampire - 1.2) < 1e-9
+	and mult_nine.enhancement == nil and bonus_nine.enhancement == nil,
+	"Vampire takes two enhancements: " .. vampire_score)
+
+-- Yorick: X1 more every 23 cards discarded.
+local yorick = new_state(scripted(function(_, turn)
+	if turn == 1 then return { type = "discard", indices = { 1, 2, 3 } } end
+	return { type = "play", indices = { 1 } }
+end), "YORICK", { "j_yorick" })
+yorick.deck = deck_of(20, 9)
+yorick.joker_state.j_yorick = 1
+yorick.joker_counters = { j_yorick = 3 }
+local yorick_session = Simulator.begin_round(yorick, nil, "Small")
+Simulator.step_round(yorick_session)
+assert(yorick.joker_state.j_yorick == 2 and yorick.joker_counters.j_yorick == 23
+	and yorick_session.hands[1].hand_score == 14 * 2, "Yorick gains X1 at the 23rd discard")
+
+-- Satellite: $1 per unique Planet card used this run.
+local function cash_out(jokers)
+	local state = new_state(base, "SATELLITE", jokers, { money = 0 })
+	state.planet_keys_used = { c_pluto = true, c_mercury = true }
+	Simulator.award_blind(state, "Small", { cleared = true, hands_left = 0, score = 1 })
+	return state.money
+end
+assert(cash_out({ "j_satellite" }) == cash_out({}) + 2, "Satellite pays $2 for two Planets")
 
 print("simulator_rules_spec: ok")

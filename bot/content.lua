@@ -108,6 +108,31 @@ local supported_joker_effects = {
 	scoring_suit_money = true,
 	suit_merge = true,
 	chance_xmult_money = true,
+	-- group B jokers
+	discard_rank_xmult = true,
+	rotating_card_xmult = true,
+	sell_duplicate_joker = true,
+	sell_disable_boss = true,
+	lucky_scaling_xmult = true,
+	boss_trigger_money = true,
+	prevent_death = true,
+	shop_end_negative_consumable = true,
+	boss_scaling_money = true,
+	-- vanilla Jokers group A (card.lua calculate_joker)
+	glass_shatter_xmult = true,
+	sell_scaling_xmult = true,
+	reroll_scaling_mult = true,
+	first_discard_level = true,
+	first_hand_single_copy = true,
+	disable_boss = true,
+	face_destroy_xmult = true,
+	-- group C jokers
+	unique_planet_money = true,
+	limited_retrigger = true,
+	skip_scaling_xmult = true,
+	rank_xmult = true,
+	enhancement_steal_xmult = true,
+	discard_count_xmult = true,
 }
 
 local supported_deck_effects = {
@@ -127,6 +152,13 @@ local supported_deck_effects = {
 	generate_joker = true,
 	repeat_consumable = true,
 	pvp_attack = true,
+	create_cards = true,
+	hand_suit = true,
+	hand_rank = true,
+	level_all_hands = true,
+	duplicate_joker = true,
+	polychrome_joker = true,
+	negative_joker = true,
 }
 
 local supported_hands = {
@@ -391,6 +423,80 @@ local joker_definitions = {
 		effect = { kind = "extra_interest", amount = 1 } },
 	{ key = "j_trading", cost = 6, utility = 27, runtime_only = true,
 		effect = { kind = "single_discard_destroy", amount = 3 } },
+	-- group B jokers (card.lua calculate_joker / calculate_dollar_bonus, game.lua P_CENTERS)
+	{ key = "j_hit_the_road", cost = 8, utility = 25,
+		effect = { kind = "discard_rank_xmult", rank = 11, amount = 0.5, initial = 1 } },
+	{ key = "j_idol", cost = 6, utility = 23,
+		effect = { kind = "rotating_card_xmult", amount = 2 } },
+	{ key = "j_invisible", cost = 8, utility = 24,
+		effect = { kind = "sell_duplicate_joker", rounds = 2, initial = 0 } },
+	{ key = "j_luchador", cost = 5, utility = 15,
+		effect = { kind = "sell_disable_boss" } },
+	{ key = "j_lucky_cat", cost = 6, utility = 21,
+		effect = { kind = "lucky_scaling_xmult", initial = 1, amount = 0.25 } },
+	{ key = "j_matador", cost = 7, utility = 16,
+		effect = { kind = "boss_trigger_money", amount = 8 } },
+	{ key = "j_mr_bones", cost = 5, utility = 20,
+		effect = { kind = "prevent_death", threshold = 0.25 } },
+	{ key = "j_perkeo", cost = 20, utility = 30,
+		effect = { kind = "shop_end_negative_consumable" } },
+	{ key = "j_rocket", cost = 6, utility = 22,
+		effect = { kind = "boss_scaling_money", initial = 1, amount = 2 } },
+	-- vanilla Jokers group A: costs and configs from game.lua P_CENTERS, effects
+	-- from card.lua calculate_joker (see the simulator for each rule).
+	{ key = "j_bloodstone", cost = 7, utility = 31,
+		-- 1 in 2 per scored Heart for X1.5.
+		effect = { kind = "chance_suit_xmult", suit = "Hearts", chance = 0.5, amount = 1.5 } },
+	{ key = "j_hanging_chad", cost = 4, utility = 25,
+		-- the first scoring card triggers 2 more times.
+		effect = { kind = "first_scoring_retrigger", cards = 1, repetitions = 2 } },
+	{ key = "j_glass", cost = 6, utility = 22,
+		-- +X0.75 per Glass Card destroyed; only in the pool with a Glass Card in the deck.
+		effect = { kind = "glass_shatter_xmult", initial = 1, amount = 0.75, pool_enhancement = "m_glass" } },
+	{ key = "j_campfire", cost = 9, utility = 24,
+		-- +X0.25 per card sold, back to X1 when a Boss Blind is defeated.
+		effect = { kind = "sell_scaling_xmult", initial = 1, amount = 0.25 } },
+	{ key = "j_flash", cost = 5, utility = 22,
+		-- +2 Mult per shop reroll.
+		effect = { kind = "reroll_scaling_mult", initial = 0, amount = 2 } },
+	{ key = "j_burnt", cost = 8, utility = 26,
+		-- the first discard of a round levels up the discarded poker hand.
+		effect = { kind = "first_discard_level" } },
+	{ key = "j_dna", cost = 8, utility = 18,
+		-- a single card played as the first hand of a round is copied into the hand.
+		effect = { kind = "first_hand_single_copy" } },
+	{ key = "j_chicot", cost = 20, utility = 30,
+		-- disables every Boss Blind.
+		effect = { kind = "disable_boss" } },
+	{ key = "j_caino", cost = 20, utility = 28,
+		-- +X1 per face card destroyed.
+		effect = { kind = "face_destroy_xmult", initial = 1, amount = 1 } },
+	-- group C jokers (card.lua calculate_joker / calculate_dollar_bonus, game.lua P_CENTERS).
+	-- Satellite: $1 per unique Planet card used this run, at the end of the round.
+	{ key = "j_satellite", cost = 6, utility = 21,
+		effect = { kind = "unique_planet_money", amount = 1 } },
+	-- Seltzer: retriggers every played card for the next 10 hands, then is drunk.
+	{ key = "j_selzer", cost = 6, utility = 27,
+		effect = { kind = "limited_retrigger", initial = 10, amount = 1, destroy_at = 0 } },
+	-- Throwback: X0.25 Mult per Blind skipped this run.
+	{ key = "j_throwback", cost = 6, utility = 22,
+		effect = { kind = "skip_scaling_xmult", amount = 0.25 } },
+	-- Golden Ticket: $4 per scoring Gold card trigger; in the pool only with a Gold card in the deck.
+	{ key = "j_ticket", cost = 5, utility = 20,
+		effect = { kind = "scoring_enhancement_money", enhancement = "m_gold", amount = 4,
+			per_trigger = true, enhancement_gate = "m_gold" } },
+	-- Triboulet: X2 Mult per scoring King or Queen.
+	{ key = "j_triboulet", cost = 20, utility = 40,
+		effect = { kind = "rank_xmult", ranks = { 12, 13 }, amount = 2 } },
+	-- Turtle Bean: +5 hand size, -1 each round.
+	{ key = "j_turtle_bean", cost = 6, utility = 25,
+		effect = { kind = "decaying_hand_size", initial = 5, amount = 1 } },
+	-- Vampire: gains X0.1 Mult per enhanced scoring card, removing the enhancement.
+	{ key = "j_vampire", cost = 7, utility = 27,
+		effect = { kind = "enhancement_steal_xmult", initial = 1, amount = 0.1 } },
+	-- Yorick: gains X1 Mult every 23 cards discarded.
+	{ key = "j_yorick", cost = 20, utility = 36,
+		effect = { kind = "discard_count_xmult", initial = 1, amount = 1, discards = 23 } },
 }
 
 local deck_tool_definitions = {
@@ -432,6 +538,33 @@ local deck_tool_definitions = {
 	{ key = "c_cryptid", set = "Spectral", cost = 4, utility = 32, effect = "duplicate", count = 2, spectral = true },
 	{ key = "c_aura", set = "Spectral", cost = 4, utility = 27, effect = "edition", spectral = true },
 	{ key = "c_deja_vu", set = "Spectral", cost = 4, utility = 21, effect = "seal", seal = "Red", spectral = true },
+	-- the rest of the vanilla Spectrals (game.lua P_CENTERS configs, card.lua
+	-- use_consumeable). Familiar, Grim and Incantation destroy a random card of
+	-- the hand and add enhanced cards of these ranks.
+	{ key = "c_familiar", set = "Spectral", cost = 4, utility = 24, effect = "create_cards",
+		ranks = { 11, 12, 13 }, count = 3, spectral = true },
+	{ key = "c_grim", set = "Spectral", cost = 4, utility = 25, effect = "create_cards",
+		ranks = { 14 }, count = 2, spectral = true },
+	{ key = "c_incantation", set = "Spectral", cost = 4, utility = 22, effect = "create_cards",
+		ranks = { 2, 3, 4, 5, 6, 7, 8, 9, 10 }, count = 4, spectral = true },
+	{ key = "c_talisman", set = "Spectral", cost = 4, utility = 22, effect = "seal", seal = "Gold", spectral = true },
+	{ key = "c_trance", set = "Spectral", cost = 4, utility = 18, effect = "seal", seal = "Blue", spectral = true },
+	{ key = "c_medium", set = "Spectral", cost = 4, utility = 18, effect = "seal", seal = "Purple", spectral = true },
+	-- Wraith: a Rare Joker, then money is set to $0.
+	{ key = "c_wraith", set = "Spectral", cost = 4, utility = 30, effect = "generate_joker",
+		rarity = 3, clear_money = true, spectral = true },
+	{ key = "c_sigil", set = "Spectral", cost = 4, utility = 20, effect = "hand_suit", spectral = true },
+	-- Ouija: every card in hand becomes one random rank, -1 hand size.
+	{ key = "c_ouija", set = "Spectral", cost = 4, utility = 16, effect = "hand_rank", hand_size = -1, spectral = true },
+	{ key = "c_ectoplasm", set = "Spectral", cost = 4, utility = 28, effect = "negative_joker", spectral = true },
+	{ key = "c_ankh", set = "Spectral", cost = 4, utility = 26, effect = "duplicate_joker", spectral = true },
+	{ key = "c_hex", set = "Spectral", cost = 4, utility = 26, effect = "polychrome_joker", spectral = true },
+	-- The Soul and Black Hole are hidden: only a pack card's 0.3% roll creates
+	-- them (common_events.lua create_card, soulable), never a shop or Seance.
+	{ key = "c_soul", set = "Spectral", cost = 4, utility = 40, effect = "generate_joker",
+		rarity = 4, spectral = true, hidden = true },
+	{ key = "c_black_hole", set = "Spectral", cost = 4, utility = 34, effect = "level_all_hands",
+		spectral = true, hidden = true },
 	{ key = "c_mp_asteroid", set = "Planet", cost = 3, utility = 27,
 		effect = "pvp_attack", action = "asteroid", multiplayer = true },
 }
@@ -590,7 +723,7 @@ function Content.build(pools, centers, banned)
 	return catalog
 end
 
--- balatro-brain patch: vanilla rarities (game.lua P_CENTERS). Live catalogs
+-- Vanilla rarities (game.lua P_CENTERS). Live catalogs
 -- read them from the game; without them the default catalog never triggered
 -- Baseball Card or Riff-raff and guessed shop rarities from the cost.
 local VANILLA_RARITY = {
@@ -695,6 +828,37 @@ local VANILLA_RARITY = {
 	j_red_card = 1,
 	j_shortcut = 2,
 	j_superposition = 1,
+	-- group B jokers
+	j_hit_the_road = 3,
+	j_idol = 2,
+	j_invisible = 3,
+	j_luchador = 2,
+	j_lucky_cat = 2,
+	j_matador = 2,
+	j_mr_bones = 2,
+	j_perkeo = 4,
+	j_rocket = 2,
+	-- vanilla Jokers group A
+	j_bloodstone = 2,
+	j_hanging_chad = 1,
+	j_glass = 2,
+	j_campfire = 3,
+	j_flash = 2,
+	j_burnt = 3,
+	j_dna = 3,
+	j_certificate = 2,
+	j_chicot = 4,
+	j_caino = 4,
+	-- group C jokers
+	j_satellite = 2,
+	j_selzer = 2,
+	j_sixth_sense = 2,
+	j_throwback = 2,
+	j_ticket = 1,
+	j_triboulet = 4,
+	j_turtle_bean = 2,
+	j_vampire = 2,
+	j_yorick = 4,
 }
 
 function Content.defaults()

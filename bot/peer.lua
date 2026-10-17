@@ -312,7 +312,7 @@ local function spectator_jokers(keys, editions)
 end
 
 
--- balatro-brain patch: Blind size at the lobby's Stake (Green/Purple scale it).
+-- Blind size at the lobby's Stake (Green/Purple scale it).
 local function blind_base(ante)
 	local Simulator = Peer.dependencies.Simulator
 	local scaling = Simulator.blind_scaling and Simulator.blind_scaling(Peer.run and Peer.run.stake)
@@ -1699,7 +1699,7 @@ local function location_for_phase(phase)
 	return phase.type .. "-" .. blind_key
 end
 
--- balatro-brain patch: the skip tags of the bot's own Ante. The host's blind
+-- The skip tags of the bot's own Ante. The host's blind
 -- tags belong to the host's current Ante, and the bot keeps its own pace, so a
 -- bot that reaches Ante N first used to see the host's Ante N-1 tags. The tags
 -- of any Ante are replayed from the host's seed (Order.blind_tags); the replay

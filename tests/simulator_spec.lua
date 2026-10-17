@@ -604,7 +604,7 @@ local marginal_buffoon = modules.Simulator.new({
 marginal_buffoon.Order = {
 	generate_pack = function()
 		return {
-			{ kind = "center", key = "j_vampire" },
+			{ kind = "center", key = "j_ceremonial" },
 			{ kind = "center", key = "j_mystic_summit" },
 		}
 	end,

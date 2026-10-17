@@ -1,4 +1,4 @@
--- balatro-brain patch: a bot that reaches an Ante before (or after) the host
+-- A bot that reaches an Ante before (or after) the host
 -- skips for the tags of its own Ante, not for whatever the host shows right now.
 package.preload.json = function()
 	return { encode = function() return "{}" end, decode = function() return {} end }

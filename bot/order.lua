@@ -322,7 +322,7 @@ local function poll_pack_card(family)
 	return { kind = "center", key = key, edition = metadata and metadata.edition }
 end
 
--- Uncommon / Rare Tag Joker for the bot's own run (balatro-brain patch).
+-- Uncommon / Rare Tag Joker for the bot's own run.
 -- Mirrors tag.lua (create_card('Joker', shop, nil, 0.9 / 1, ..., 'uta' / 'rta'))
 -- under Multiplayer's The Order, whose create_card wrapper runs at Ante 0 and
 -- replaces a Joker's key_append with its rarity: the Joker comes from its own
@@ -346,7 +346,7 @@ function Order.generate_tag_joker(run, rarity)
 end
 
 -- Small/Big Blind tags of `ante` in the game started from `seed_state`
--- ({ seed, hashed_seed } of the host's run) (balatro-brain patch). The game
+-- ({ seed, hashed_seed } of the host's run). The game
 -- draws both tags of every Ante from one "Tag" queue (get_next_tag_key, two
 -- draws per Ante from Ante 1), so replaying that queue on a fresh copy gives
 -- any Ante's tags without waiting for the host to reach it. The host's RNG
