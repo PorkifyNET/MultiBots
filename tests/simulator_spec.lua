@@ -251,8 +251,10 @@ assert(modules.Simulator.next_reroll_cost(rich_reroll, 0) == 5
 	"shop reroll costs should start at $5 and rise by $1 each time")
 local chaos_reroll = modules.Simulator.new({ seed = "CHAOS-REROLL", difficulty = "expert" }, modules)
 chaos_reroll.jokers = { "j_chaos" }
+-- the free reroll does not raise the price (button_callbacks.lua
+-- reroll_shop: calculate_reroll_cost(final_free)), so the next one costs $5.
 assert(modules.Simulator.next_reroll_cost(chaos_reroll, 0) == 0
-	and modules.Simulator.next_reroll_cost(chaos_reroll, 1) == 6,
+	and modules.Simulator.next_reroll_cost(chaos_reroll, 1) == 5,
 	"Chaos should make exactly the first reroll in each shop free")
 assert(modules.Simulator.should_reroll(chaos_reroll,
 	{ purchases = 1, supported_keys = { "j_joker" } }, 0),
@@ -626,8 +628,11 @@ local multi_rank_card = multi_rank_pack.deck[#multi_rank_pack.deck]
 assert(multi_rank_report.purchases == 1 and multi_rank_card.rank == 5,
 	"Standard Packs should preserve every rank supported by multi-rank Jokers, not only one target rank")
 
+-- a Booster's cards are unknown until it is opened (as in
+-- the game), so only the old peeking shop (legacy_shop) can see that this pack
+-- holds nothing useful.
 local useless_arcana = modules.Simulator.new({
-	seed = "OPTIONALPACK", difficulty = "expert",
+	seed = "OPTIONALPACK", difficulty = "expert", legacy_shop = true,
 	content_catalog = {
 		jokers = {}, planets = {},
 		deck_tools = { { key = "c_moon", set = "Tarot", cost = 3, utility = 25,
@@ -653,8 +658,17 @@ useful_spectral.money = 20
 useful_spectral.strategy_open = true
 useful_spectral.strategy_plan = modules.Strategy.analyze(useful_spectral)
 local spectral_report = modules.Simulator.visit_shop(useful_spectral, { "p_spectral_normal_1" })
-assert(spectral_report.purchases == 1 and #useful_spectral.deck == 53,
+-- a pack's cards are drawn when it is opened, from all 16
+-- vanilla Spectrals (only Cryptid is in this catalog): Cryptid is applied when it shows.
+do
+local spectral_revealed = ""
+for _, decision in ipairs(useful_spectral.decisions) do
+	if decision.type == "buy_pack" then spectral_revealed = decision.modeled or "" end
+end
+assert(spectral_report.purchases == 1
+	and #useful_spectral.deck == (spectral_revealed:find("c_cryptid", 1, true) and 53 or 52),
 	"a useful visible Spectral Pack should apply its selected deck tool")
+end
 
 local hologram_standard = modules.Simulator.new({
 	seed = "STANDARDPACK", difficulty = "expert",
@@ -837,15 +851,16 @@ modules.Simulator.set_ante(duplicate_packs, 2)
 local duplicate_report = modules.Simulator.visit_shop(duplicate_packs, {
 	"p_buffoon_normal_1", "p_buffoon_normal_1",
 })
-assert(duplicate_report.purchases == 2 and #duplicate_packs.jokers == 2 and duplicate_packs.money == 18,
-	"duplicate Buffoon keys should have independent contents and never charge for an empty second pick")
+-- a Booster's cards are unknown until it is bought (as in
+-- the game), so both packs are paid for and opened; their contents differ.
+assert(duplicate_report.purchases == 2 and duplicate_packs.money == 18 and #duplicate_packs.jokers <= 2,
+	"duplicate Buffoon keys should be bought unopened and have independent contents")
 local duplicate_buys = {}
 for _, decision in ipairs(duplicate_packs.decisions) do
 	if decision.type == "buy_pack" then duplicate_buys[#duplicate_buys + 1] = decision end
 end
-assert(#duplicate_buys == 2 and duplicate_buys[1].picked ~= "" and duplicate_buys[2].picked ~= ""
-	and duplicate_buys[1].picked ~= duplicate_buys[2].picked,
-	"each purchased duplicate Buffoon Pack should report a distinct applied Joker")
+assert(#duplicate_buys == 2 and duplicate_buys[1].modeled ~= duplicate_buys[2].modeled,
+	"each purchased duplicate Buffoon Pack should reveal its own cards")
 
 local duplicate_jokers = modules.Simulator.new({ seed = "DUPLICATE-JOKERS", difficulty = "expert" }, modules)
 duplicate_jokers.money = 20
@@ -969,32 +984,34 @@ for _, card in ipairs(arcana.deck) do if card.enhancement then enhancements_afte
 assert(enhancements_after >= enhancements_before + 2,
 	"repeated enhancement tools should target unenhanced cards instead of overwriting prior work")
 
+-- Tarots act on cards in hand (card.lua use_consumeable), so
+-- they are checked on what they change, not on reaching a deck-wide target.
 local deck_fix = modules.Simulator.new({ seed = "TARGETED-DECK-FIX", difficulty = "expert", the_order = true }, modules)
 deck_fix.money = 50
 modules.Simulator.set_ante(deck_fix, 2)
 modules.Simulator.visit_shop(deck_fix, { "c_chariot" })
-local enhanced_king_of_hearts = false
+do
+local steel = 0
+for _, card in ipairs(deck_fix.deck) do if card.enhancement == "m_steel" then steel = steel + 1 end end
+assert(steel == 1, "The Chariot should make one card Steel")
+local ranks_before = {}
+for _, card in ipairs(deck_fix.deck) do ranks_before[card] = card.rank end
+modules.Simulator.visit_shop(deck_fix, { "c_strength" })
+local raised = 0
 for _, card in ipairs(deck_fix.deck) do
-	if card.rank == 13 and card.suit == "Hearts" and card.enhancement == "m_steel" then
-		enhanced_king_of_hearts = true
+	if card.rank ~= ranks_before[card] then
+		raised = raised + 1
+		assert(card.rank == (ranks_before[card] == 14 and 2 or ranks_before[card] + 1), "Strength raises a rank by one")
 	end
 end
-assert(enhanced_king_of_hearts,
-	"the first enhancement should begin a coherent King/Hearts deck target instead of walking every Ace")
-modules.Simulator.visit_shop(deck_fix, { "c_strength" })
-local kings, twos = 0, 0
-for _, card in ipairs(deck_fix.deck) do
-	if card.rank == 13 then kings = kings + 1 end
-	if card.rank == 2 then twos = twos + 1 end
-end
-assert(kings > 4 and twos == 4,
-	"Strength should promote Queens toward the preferred rank rather than wrap Aces into 2s")
+assert(raised == 2, "Strength should raise two cards")
+local hearts_before = 0
+for _, card in ipairs(deck_fix.deck) do if card.suit == "Hearts" then hearts_before = hearts_before + 1 end end
 modules.Simulator.visit_shop(deck_fix, { "c_sun" })
-local heart_kings = 0
-for _, card in ipairs(deck_fix.deck) do
-	if card.rank == 13 and card.suit == "Hearts" then heart_kings = heart_kings + 1 end
+local hearts_after = 0
+for _, card in ipairs(deck_fix.deck) do if card.suit == "Hearts" then hearts_after = hearts_after + 1 end end
+assert(hearts_after > hearts_before and hearts_after <= hearts_before + 3, "suit conversion should convert up to three cards")
 end
-assert(heart_kings > 1, "suit conversion should reinforce the preferred rank/suit target")
 
 local skipper = modules.Simulator.new({ seed = "SKIPPER", difficulty = "expert", the_order = true }, modules)
 modules.Simulator.set_ante(skipper, 1)
@@ -1060,7 +1077,9 @@ modules.Simulator.set_ante(negative, 2)
 negative.money = 20
 negative.jokers = { "a", "b", "c", "d", "e" }
 modules.Simulator.plan_skips(negative, "negative_only", { Small = "tag_negative" })
-local negative_report = modules.Simulator.visit_shop(negative, {})
+-- the Negative Tag makes the next shop Joker Negative and free
+-- (tag.lua store_joker_modify) instead of adding a Joker of its own.
+local negative_report = modules.Simulator.visit_shop(negative, { "j_negative_test" })
 assert(#negative.jokers == 6 and negative.joker_limit == 6
 	and negative.joker_editions.j_negative_test == "negative",
 	"Negative Tag should add a slot-neutral Negative Joker even when the build is full")
@@ -1241,7 +1260,8 @@ merchant.money = 20
 merchant.jokers = { "j_constellation" }
 merchant.joker_effects.j_constellation = { kind = "planet_scaling_xmult", initial = 1, amount = 0.1 }
 local merchant_report = modules.Simulator.visit_shop(merchant, { "v_planet_merchant" })
-assert(merchant_report.purchases == 1 and merchant.planet_rate == 2,
+-- Planet rate x2.4 (4 -> 9.6, game.lua v_planet_merchant extra = 9.6/4).
+assert(merchant_report.purchases == 1 and math.abs(merchant.planet_rate - 2.4) < 1e-9,
 	"Planet Merchant should be supported and increase Planet frequency for Constellation")
 
 local income_jokers = modules.Simulator.new({ seed = "MORE-INCOME", difficulty = "expert", the_order = true }, modules)

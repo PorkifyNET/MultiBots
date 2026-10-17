@@ -66,7 +66,8 @@ local function is_flush(cards, required, suit_merge)
 	if #cards ~= (required or 5) then return false end
 	local suit = nil
 	for _, card in ipairs(cards) do
-		if card.enhancement ~= "m_wild" then
+		-- a debuffed Wild card is not wild (is_suit flush_calc).
+		if card.enhancement ~= "m_wild" or card.debuff then
 			local card_suit = suit_merge and merged_suit(card.suit) or card.suit
 			suit = suit or card_suit
 			if card_suit ~= suit then return false end
@@ -153,16 +154,32 @@ local function has_rank(ranks, rank)
 	return false
 end
 
+-- Card identity as the game sees it (Card:get_id / is_suit / is_face): a Stone
+-- card has no rank and no suit; Pareidolia makes every card a face card.
+-- a card debuffed by a Boss Blind (card.debuff) has no
+-- suit and is no face card for Jokers (is_suit / is_face return nothing).
 local function is_stone(card) return card.enhancement == "m_stone" end
 local function rank_of(card) return not is_stone(card) and card.rank or nil end
-local function is_face(card) return not is_stone(card) and card.rank >= 11 and card.rank <= 13 end
+-- is_suit(suit, nil, flush_calc = true) (Blackboard): the base suit even when
+-- debuffed; a Wild card only when it is not debuffed; Smeared Joker merges the
+-- colours (card.lua Card:is_suit).
+local function flush_suited(state, card, suit)
+	if is_stone(card) then return false end
+	if card.enhancement == "m_wild" and not card.debuff then return true end
+	if card.suit == suit then return true end
+	return state.suit_merge and merged_suit(card.suit) == merged_suit(suit) or false
+end
+local function is_face(card)
+	return not is_stone(card) and not card.debuff and card.rank >= 11 and card.rank <= 13
+end
 
 local function scoring_face(state, card)
+	if card.debuff then return false end
 	return state.all_cards_are_faces or is_face(card)
 end
 
 local function suit_matches(state, card, wanted)
-	if is_stone(card) then return false end
+	if is_stone(card) or card.debuff then return false end   -- debuffed = no suit
 	if card.enhancement == "m_wild" or card.suit == wanted then return true end
 	return state.suit_merge and merged_suit(card.suit) == merged_suit(wanted)
 end
@@ -237,7 +254,7 @@ apply_adapter = function(effect, state, joker_key, joker_index, resolving, resol
 		for _, card in ipairs(state.context.held_cards or {}) do
 			local ok = false
 			for _, suit in ipairs(effect.suits or {}) do
-				if suit_matches(state, card, suit) then ok = true end
+				if flush_suited(state, card, suit) then ok = true end
 			end
 			if not ok then valid = false; break end
 		end
@@ -307,9 +324,12 @@ apply_adapter = function(effect, state, joker_key, joker_index, resolving, resol
 		for _, card in ipairs(state.context.full_deck or {}) do if card.enhancement then count = count + 1 end end
 		if count >= effect.count then apply_xmult(state, effect.amount) end
 	elseif effect.kind == "scoring_suits_xmult" then
+		-- Flower Pot: every Wild card fills one missing suit; debuffed cards count
+		-- by their suit (is_suit bypass_debuff), debuffed Wild cards not at all.
 		local suits, count, wilds = {}, 0, 0
 		for _, card in ipairs(state.scoring) do
-			if card.enhancement == "m_wild" then wilds = wilds + 1
+			if card.enhancement == "m_wild" then
+				if not card.debuff then wilds = wilds + 1 end
 			elseif not is_stone(card) and not suits[card.suit] then
 				suits[card.suit] = true
 				count = count + 1
@@ -319,7 +339,9 @@ apply_adapter = function(effect, state, joker_key, joker_index, resolving, resol
 	elseif effect.kind == "mixed_suit_xmult" then
 		local wanted, other, wilds = false, false, 0
 		for _, card in ipairs(state.scoring) do
-			if card.enhancement == "m_wild" then wilds = wilds + 1
+			if card.debuff then
+				-- a debuffed card has no suit (is_suit)
+			elseif card.enhancement == "m_wild" then wilds = wilds + 1
 			elseif not is_stone(card) then
 				if card.suit == effect.suit then wanted = true else other = true end
 			end
@@ -433,6 +455,15 @@ local function resolves_kind(jokers, effects, index, wanted, resolved_jokers)
 	return effect and effect.kind == wanted or false
 end
 
+-- the effect a Joker slot really has (Blueprint/Brainstorm
+-- resolved to the Joker they copy), with the copied Joker's key and slot, so
+-- the simulator can apply copied money and card effects as the game does.
+function Evaluator.resolve_copy(jokers, effects, index)
+	local result = resolved_joker(jokers, effects, index)
+	if result then return result.effect, result.key, result.index end
+	return nil
+end
+
 -- A Joker's effect on one scoring card (context.individual, cardarea play).
 local function apply_individual(effect, state, card, own_key)
 	local kind = effect.kind
@@ -514,6 +545,15 @@ function Evaluator.evaluate(cards, levels, jokers, context)
 	end
 	local hand = Evaluator.hands[name]
 	local level = (levels and levels[name]) or 1
+	-- The Psychic does not score a hand of fewer than 5
+	-- cards (Blind:debuff_hand, h_size_ge); nothing else of the hand happens.
+	if context and context.boss_min_cards and #cards < context.boss_min_cards then
+		return {
+			name = name, strength = hand.strength, chips = 0, mult = 0, score = 0,
+			scoring_cards = scoring, contained = contained, card_repetitions = {},
+			dollars = 0, growth = {}, hiker = {}, debuffed_hand = true,
+		}
+	end
 
 	-- Each Joker's effect with copies (Blueprint/Brainstorm) resolved.
 	local resolved, owners, targets = {}, {}, {}
@@ -536,9 +576,16 @@ function Evaluator.evaluate(cards, levels, jokers, context)
 		if own and own.kind == "empty_slot_xmult" then stencils = stencils + 1 end
 	end
 
+	local base_chips = hand.chips + hand.l_chips * (level - 1)
+	local base_mult = hand.mult + hand.l_mult * (level - 1)
+	if context and context.boss_halve_base then
+		-- The Flint halves base chips and mult (Blind:modify_hand).
+		base_mult = math.max(math.floor(base_mult * 0.5 + 0.5), 1)
+		base_chips = math.max(math.floor(base_chips * 0.5 + 0.5), 0)
+	end
 	local state = {
-		chips = hand.chips + hand.l_chips * (level - 1),
-		mult = hand.mult + hand.l_mult * (level - 1),
+		chips = base_chips,
+		mult = base_mult,
 		x_mult = 1,
 		name = name,
 		contained = contained,
@@ -562,6 +609,8 @@ function Evaluator.evaluate(cards, levels, jokers, context)
 	local card_repetition_counts = {}
 	for scoring_index, card in ipairs(scoring) do
 		local repetitions = scoring_repetitions + (card.seal == "Red" and 1 or 0)
+		-- a debuffed card scores nothing and is not retriggered.
+		if card.debuff then repetitions = -math.huge end
 		for index = 1, #jokers do
 			local effect = resolved[index]
 			if effect and effect.kind == "rank_retrigger" and has_rank(effect.ranks, rank_of(card)) then
@@ -573,6 +622,7 @@ function Evaluator.evaluate(cards, levels, jokers, context)
 				repetitions = repetitions + (effect.repetitions or 1)
 			end
 		end
+		repetitions = math.max(0, repetitions)
 		card_repetition_counts[card] = repetitions
 		for _ = 1, repetitions do
 			local bonus = state.hiker[card] or 0
@@ -584,7 +634,8 @@ function Evaluator.evaluate(cards, levels, jokers, context)
 			if card.enhancement == "m_bonus" then state.chips = state.chips + 30 end
 			if card.enhancement == "m_mult" then state.mult = state.mult + 4 end
 			if card.enhancement == "m_lucky" then state.mult = state.mult + 4 end   -- expected 1 in 5 for +20
-			if card.enhancement == "m_glass" then apply_xmult(state, 2) end
+			-- Glass X2, or X1.5 under Multiplayer's reworked Glass (context.glass_xmult).
+			if card.enhancement == "m_glass" then apply_xmult(state, state.context.glass_xmult or 2) end
 			if card.edition == "foil" then state.chips = state.chips + 50 end
 			if card.edition == "holo" then state.mult = state.mult + 10 end
 			if card.edition == "polychrome" then apply_xmult(state, 1.5) end
@@ -608,11 +659,11 @@ function Evaluator.evaluate(cards, levels, jokers, context)
 		end
 	end
 	for _, card in ipairs(held) do
-		local active = card.enhancement == "m_steel"
+		local active = card.enhancement == "m_steel" and not card.debuff
 		if adapters and not active then
 			for index = 1, #jokers do
 				local effect = resolved[index]
-				if effect and HELD[effect.kind] and held_applies(effect, state, card) then active = true; break end
+				if effect and HELD[effect.kind] and not card.debuff and held_applies(effect, state, card) then active = true; break end
 			end
 		end
 		if active then
