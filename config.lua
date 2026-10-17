@@ -1,0 +1,45 @@
+return {
+	last_difficulty = "normal",
+	name_mode = "classic",
+	custom_name = "MultiBot",
+	generated_name = "",
+	bot_blind_col = 2,
+	pace_preset = "standard",
+	behavior = {
+		timer_player = true,
+		skip_mode = "reactive",
+	},
+	logging = {
+		high_regret_threshold = 25,
+		score_variance_ratio = 4,
+		reorder_threshold = 3,
+		technical_debug = false,
+	},
+	-- Trained profiles are opt-in. Paste a validated best-weights.lua table into
+	-- values and set enabled=true only after deliberately promoting it.
+	strategy_weights = {
+		enabled = true,
+		name = "beta",
+		values = {["card_preservation"] = 0.96830965029404,
+  ["consumable_value"] = 1.4208151208644,
+  ["deck_manipulation"] = 0.94258400200251,
+  ["discard_potential"] = 1.0947111777611,
+  ["economy_value"] = 0.99708391205973,
+  ["future_value"] = 1.2672790622565,
+  ["immediate_score"] = 0.9090894539287,
+  ["interest_preservation"] = 0.83510566984004,
+  ["joker_synergy"] = 0.98300600420824,
+  ["joker_value"] = 1.1965343736586,
+  ["pack_value"] = 1.2605782887596,
+  ["plan_alignment"] = 1,
+  ["risk_tolerance"] = 1.1827612675471,
+  ["survival_pressure"] = 1.0924693516782,},
+	},
+	pace = {
+		selecting_seconds = 4,
+		blind_base_seconds = 8,
+		seconds_per_action = 5.5,
+		minimum_blind_seconds = 25,
+		shop_seconds = 18,
+	},
+}

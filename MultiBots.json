@@ -1,0 +1,26 @@
+{
+  "id": "MultiBots",
+  "name": "MultiBots",
+  "display_name": "MultiBots",
+  "author": ["PorkyLIVE"],
+  "description": "Bot opponents for Balatro Multiplayer and Experimental Multiplayer private lobbies.",
+  "prefix": "mbot",
+  "main_file": "main.lua",
+  "priority": 10000001,
+  "version": "0.17.3",
+  "dependencies": [
+    "Steamodded (>=1.0.0~BETA-1620a)"
+  ],
+  "conflicts": [
+    "SystemClock (<<1.6.3)",
+    "Cryptid (<<0.5.4)",
+    "Talisman (<=2.0.2)",
+    "VirtualizedMultiplayer",
+    "JokerDisplay (<<1.9.6)",
+    "Multiplayer (<<0.5.5)",
+    "MultiplayerExperimental (<<0.11.3)",
+    "porkify"
+  ],
+  "icon_path": "ModIcon.png",
+  "icon_width": 34
+}

@@ -39,3 +39,9 @@ luac.out
 *.x86_64
 *.hex
 
+# Project-specific files
+logs/
+notes/
+training/
+tools/
+tests/
