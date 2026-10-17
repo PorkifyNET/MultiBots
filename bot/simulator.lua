@@ -764,6 +764,10 @@ local function current_round_resources(state)
 		if effect and effect.kind == "round_resources" then
 			hands = hands + (effect.hands or 0)
 			if effect.reset_discards then reset = true else discards = discards + (effect.discards or 0) end
+		elseif effect and effect.kind == "skip_advantage_resources" then
+			local advantage = math.max(0, (tonumber(state.skips) or 0) - (tonumber(state.opponent_skips) or 0))
+			hands = hands + advantage * (effect.hands or 0)
+			discards = discards + advantage * (effect.discards or 0)
 		end
 	end
 	if reset then discards = 0 end
@@ -1064,6 +1068,9 @@ local function update_scaling_jokers(state, result, played_cards)
 					if card.rank == 14 and card.enhancement ~= "m_stone" then has_ace = true; break end
 				end
 				if has_ace then generate_tarot(state, key, "straight_ace") end
+			elseif effect.kind == "low_money_tarot"
+				and (tonumber(state.money) or 0) <= (effect.threshold or 3) then
+				generate_tarot(state, key, "low_money_hand")
 			end
 		end
 	end
@@ -1643,7 +1650,9 @@ local function should_use_consumable(state, consumable, source)
 	if consumable.effect == "money" then
 		local gain = money_consumable_gain(state, consumable)
 		local target = consumable.sell_value and 10 or math.min(consumable.cap or 20, 16)
-		return gain >= target or (source == "make_room" and gain >= math.max(4, target * 0.5))
+		return gain >= target
+			or (source == "shop_start" and gain >= 10)
+			or (source == "make_room" and gain >= math.max(4, target * 0.5))
 	end
 	return state.strategy_open and consumable_utility(state, consumable) >= 10
 end
@@ -3013,6 +3022,7 @@ function Simulator.new(options, dependencies)
 		times_rerolled = 0,
 		reroll_cost_total = 0,
 		skips = 0,
+		opponent_skips = 0,
 		skip_plans = {},
 		strategy_open = false,
 		pending_tag_jokers = {},

@@ -202,9 +202,11 @@ assert(pvp_location == "loc_playing-bl_mp_nemesis",
 	"starting PvP must update the bot location instead of leaving it marked as selecting")
 Peer.handle({ action = "asteroid" })
 assert(pvp_effects[1] == "asteroid", "opponent PvP effects must reach the live bot simulation")
-Peer.handle({ action = "enemyInfo", handsLeft = 3, score = 50 })
+Peer.handle({ action = "enemyInfo", handsLeft = 3, score = 50, skips = 2 })
 assert(pvp_steps == 2 and Peer.bot_hands == 3,
 	"the bot should answer one player hand and stop again when remaining hands match")
+assert(Peer.run.opponent_skips == 2,
+	"enemy skip counts must reach Skip-Off's live simulation state")
 emit_asteroid_on_shop = true
 Peer.handle({ action = "endPvP", lost = false })
 assert(Peer.pvp_session == nil, "ending PvP should finalize and discard its live round session")

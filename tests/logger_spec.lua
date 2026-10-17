@@ -38,6 +38,10 @@ Logger.write("BLIND_FAILURE", { decision_id = 45, action = "fail_round", ante = 
 	score = 955, target = 1000, hands_remaining = 0, hands_available = 4,
 	discards_remaining = 2, discards_available = 3, consumables_remaining = 1,
 	consumables_available = 1, snapshot = "failure:state" })
+Logger.write("BLIND_FAILURE", { decision_id = 55, action = "fail_round", ante = 3, blind = "Big",
+	score = 955, target = 1000, hands_remaining = 0, hands_available = 4,
+	discards_remaining = 0, discards_available = 3, consumables_remaining = 1,
+	consumables_available = 1, consumables = "c_hermit", snapshot = "failure:economy" })
 Logger.write("FINAL_BOT", {
 	jokers = "j_wee,j_trousers", joker_details = "j_wee edition=none effect=rank_scaling_chips scaling=80 target_rank=2,j_trousers edition=foil effect=hand_scaling_mult scaling=12 target_hand=Two Pair",
 	deck_count = 5, deck = "H-2-m_lucky-none-Red;H-2-m_lucky-none-Red;S-A-none-none-none;S-A-none-none-none;C-K-m_steel-foil-Gold",
@@ -86,6 +90,8 @@ assert(files[report_path] and files[report_path]:match("MATCH QUALITY REPORT")
 	and files[report_path]:match("near miss <5%%")
 	and files[report_path]:match("unused discards=2")
 	and files[report_path]:match("suspicious resource conservation")
+	and not files[report_path]:match("Ante 3 Big.-unused consumables")
+	and not files[report_path]:match("Ante 3 Big.-suspicious resource conservation")
 	and files[report_path]:match("Unsupported objects: 3 unique, 4 encounters")
 	and files[report_path]:match("c_unknown: 1")
 	and not files[report_path]:match("c_earth:")

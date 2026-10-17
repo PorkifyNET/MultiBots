@@ -44,3 +44,4 @@ logs/
 !logs/.gitkeep
 notes/
 training/results/
+tools/__pycache__/

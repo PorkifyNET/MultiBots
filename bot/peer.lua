@@ -1565,6 +1565,9 @@ function Peer.handle(message)
 		if resolve_bot_only_match(true) then return end
 		local is_nemesis_info = not message.playerId or not Peer.nemesis_id
 			or tostring(message.playerId) == tostring(Peer.nemesis_id)
+		if is_nemesis_info and Peer.run and message.skips ~= nil then
+			Peer.run.opponent_skips = tonumber(message.skips) or Peer.run.opponent_skips or 0
+		end
 		local previous_hands, previous_score = Peer.player_hands, Peer.player_score
 		if is_nemesis_info then
 			Peer.player_hands = tonumber(message.handsLeft) or Peer.player_hands
