@@ -759,6 +759,7 @@ local joker_topic_effects = {
 		missing_deck_mult = true, hand_scaling_mult = true, bus_scaling_mult = true,
 		green_scaling_mult = true, suit_card_mult = true, other_joker_sell_mult = true, money_step_mult = true,
 		skipped_pack_scaling_mult = true, sacrifice_scaling_mult = true, opponent_sale_mult = true,
+		reroll_scaling_mult = true,
 	},
 	xmult = {
 		first_face_xmult = true, last_hand_xmult = true, repeat_hand_xmult = true, 
@@ -767,25 +768,29 @@ local joker_topic_effects = {
 		held_rank_xmult = true, empty_slot_xmult = true, enhanced_threshold_xmult = true,
 		scoring_suits_xmult = true, mixed_suit_xmult = true, periodic_xmult = true,
 		discard_decay_xmult = true, non_pvp_xmult = true, chance_suit_xmult = true,
-		rotating_suit_xmult = true, blind_scaling_xmult = true, 
+		rotating_suit_xmult = true, blind_scaling_xmult = true, face_destroy_xmult = true, discard_rank_xmult = true, 
+		rotating_card_xmult = true, lucky_scaling_xmult = true, skip_scaling_xmult = true, sell_scaling_xmult = true,
+		glass_shatter_xmult = true, rank_xmult = true, enhancement_steal_xmult = true, discard_count_xmult = true,
 	},
 	economy = {
 		played_hand_money = true, deck_rank_money = true, round_money = true, hand_money = true, discard_money = true,
 		hand_scaling_money = true, discard_scaling_money = true, rank_scaling_money = true, decaying_money = true, suit_money = true, flat_money = true, discard_face_money = true,
 		debt_limit = true, free_shop_reroll = true, scoring_face_money = true, sell_value_growth = true,
 		scoring_enhancement_money = true, held_face_money = true, extra_interest = true, single_discard_destroy = true, 
-		discard_rank_money = true,
+		discard_rank_money = true, boss_scaling_money = true, unique_planet_money = true,
 	},
 	tarots = { tarot_scaling_mult = true, round_tarot_generation = true, pack_tarot_chance = true, straight_ace_tarot = true, },
-	planets = { planet_scaling_xmult = true, chance_hand_level = true, free_planets = true, },
-	spectrals = { straight_flush_spectral = true, },
+	planets = { planet_scaling_xmult = true, chance_hand_level = true, free_planets = true, first_discard_level = true, unique_planet_money = true, },
+	spectrals = { straight_flush_spectral = true, first_six_spectral = true, },
 	playing_blinds = {
 		copy_joker = true, round_resources = true, decaying_hand_size = true,
 		all_played_score = true, all_faces = true, round_joker_generation = true,
 		retrigger_scoring = true, rank_retrigger = true, face_retrigger = true, held_retrigger = true,
 		round_tarot_generation = true, face_retrigger = true, straight_gaps = true,
 		round_stone_card = true, double_tag_on_sell = true, four_card_hands = true,
-		pvp_discard_food = true, double_probabilities = true,
+		pvp_discard_food = true, double_probabilities = true, sell_disable_boss = true,
+		boss_trigger_money = true, prevent_death = true, limited_retrigger = true,
+		first_hand_single_copy = true, first_scoring_retrigger = true,
 	},
 }
 
@@ -801,10 +806,10 @@ local enhancement_topics = {
 local voucher_topics = {
 	economy = { v_grabber = true, v_seed_money = true, v_money_tree = true, v_clearance_sale = true, v_liquidation = true,
 	v_overstock_norm = true, v_overstock_plus = true, v_hone = true, v_magic_trick = true, },
-	tarots = { v_crystal_ball = true, v_tarot_mechant = true, },
-	planets = { v_crystal_ball = true, v_planet_merchant = true, v_telescope = true, },
-	spectrals = { v_crystal_ball = true, v_omen_globe = true, },
-	playing_blinds = { v_grabber = true, v_paint_brush = true, v_wasteful = true, v_blank = true, },
+	tarots = { v_crystal_ball = true, v_tarot_mechant = true, shop_end_negative_consumable = true, },
+	planets = { v_crystal_ball = true, v_planet_merchant = true, v_telescope = true, shop_end_negative_consumable = true, },
+	spectrals = { v_crystal_ball = true, v_omen_globe = true, shop_end_negative_consumable = true, },
+	playing_blinds = { v_grabber = true, v_paint_brush = true, v_wasteful = true, v_blank = true, disable_boss = true, },
 }
 
 local supported_skip_tags = {
@@ -834,7 +839,8 @@ local function supported_card_ids(catalog, kind, topic_key)
 			and not (item.effect.kind == "non_pvp_xmult")) 
 			)) 
 			then add(item.key) end
-			if allowed[effect_kind] or (topic_key == "double_tag_on_sell") then add(item.key) end
+			if allowed[effect_kind] or (topic_key == "skipping_blinds" and item.effect and item.effect.kind == "double_tag_on_sell") then add(item.key) end
+			if allowed[effect_kind] or (topic_key == "skipping_blinds" and item.effect and item.effect.kind == "skip_scaling_xmult") then add(item.key) end
 		end
 	elseif kind == "consumables" then
 		if topic_key == "planets" then
