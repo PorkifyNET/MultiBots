@@ -552,6 +552,17 @@ function Strategy.joker_utility(state, joker, plan)
 	elseif effect.kind == "round_tarot_generation" then
 		local pressure = Strategy.deck_fix_pressure and Strategy.deck_fix_pressure(state) or 0
 		value = 18 + math.min(8, pressure * 0.4)
+	elseif effect.kind == "round_sealed_card" then
+		local hologram = false
+		for _, key in ipairs(state.jokers or {}) do
+			local owned = state.joker_effects and state.joker_effects[key]
+			if owned and owned.kind == "deck_add_scaling_xmult" then hologram = true; break end
+		end
+		value = 22 + (hologram and 8 or 0)
+	elseif effect.kind == "first_six_spectral" then
+		local sixes = count_deck_cards(state, function(card) return card.rank == 6 end)
+		local slots = math.max(0, (state.consumable_limit or 2) - #(state.consumables or {}))
+		value = 10 + math.min(12, sixes * 2) + math.min(6, slots * 3)
 	elseif effect.kind == "low_money_tarot" then
 		local slots = math.max(0, (state.consumable_limit or 2) - #(state.consumables or {}))
 		local active = (tonumber(state.money) or 0) <= (effect.threshold or 3)
