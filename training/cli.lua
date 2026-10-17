@@ -7,6 +7,7 @@ local modules = {
 	Strategy = dofile("bot/strategy.lua"),
 	Policy = dofile("bot/policy.lua"),
 	Simulator = dofile("bot/simulator.lua"),
+	Expert = dofile("bot/expert.lua"),
 }
 local Fitness = dofile("training/fitness.lua")
 local Evolution = dofile("training/evolution.lua")

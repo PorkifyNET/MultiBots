@@ -8,6 +8,7 @@ local modules = {
 	Simulator = dofile("bot/simulator.lua"),
 	Order = dofile("bot/order.lua"),
 }
+modules = dofile("bot/expert.lua").modules(modules)   -- MultiBots' Expert decides
 
 local state = modules.Simulator.new({
 	seed = "CELESTIAL", difficulty = "expert", the_order = true,

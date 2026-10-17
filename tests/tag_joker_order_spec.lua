@@ -80,6 +80,7 @@ local modules = {
 	Evaluator = dofile("bot/evaluator.lua"), Strategy = dofile("bot/strategy.lua"),
 	Policy = dofile("bot/policy.lua"), Simulator = dofile("bot/simulator.lua"), Order = Order,
 }
+modules = dofile("bot/expert.lua").modules(modules)   -- MultiBots' Expert decides
 local function strict_run(order)
 	local state = modules.Simulator.new({
 		seed = "TAGRUN", difficulty = "expert", the_order = true, strict_order_content = true,

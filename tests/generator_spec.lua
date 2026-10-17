@@ -7,6 +7,7 @@ local modules = {
 	Policy = dofile("bot/policy.lua"),
 	Simulator = dofile("bot/simulator.lua"),
 }
+modules = dofile("bot/expert.lua").modules(modules)   -- MultiBots' Expert decides
 local Generator = dofile("generator.lua")
 modules.Generator = Generator
 Generator.configure(modules)

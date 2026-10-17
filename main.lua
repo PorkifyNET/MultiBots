@@ -35,6 +35,7 @@ local modules_ok, modules = pcall(function()
 		Strategy = load_module("bot/strategy.lua"),
 		Policy = load_module("bot/policy.lua"),
 		Simulator = load_module("bot/simulator.lua"),
+		Expert = load_module("bot/expert.lua"),
 		Playback = load_module("bot/playback.lua"),
 		Endgame = load_module("bot/endgame.lua"),
 		LocalServer = load_module("bot/local_server.lua"),

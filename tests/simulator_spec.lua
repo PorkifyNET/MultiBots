@@ -8,6 +8,7 @@ local modules = {
 	Simulator = dofile("bot/simulator.lua"),
 	Order = dofile("bot/order.lua"),
 }
+modules = dofile("bot/expert.lua").modules(modules)   -- MultiBots' Expert decides
 
 local function has_value(values, wanted)
 	for _, value in ipairs(values or {}) do if value == wanted then return true end end
@@ -234,17 +235,17 @@ local rich_reroll = modules.Simulator.new({ seed = "RICH-REROLL", difficulty = "
 modules.Simulator.set_ante(rich_reroll, 6)
 rich_reroll.money = 60
 rich_reroll.jokers = { "j_joker", "j_abstract" }
-assert(modules.Simulator.should_reroll(rich_reroll,
+assert(modules.Expert.should_reroll(rich_reroll,
 	{ purchases = 1, supported_keys = { "j_joker" } }, 5),
 	"a rich late build without XMult should reroll even after buying a non-power item")
 rich_reroll.interest_cap = 10
 rich_reroll.money = 63
 assert(modules.Strategy.reserve(rich_reroll, rich_reroll.strategy_plan) == 50,
 	"Seed Money's $10 interest cap should preserve $50 when the build is healthy")
-assert(modules.Simulator.should_reroll(rich_reroll, { purchases = 0, supported_keys = {} }, 7),
+assert(modules.Expert.should_reroll(rich_reroll, { purchases = 0, supported_keys = {} }, 7),
 	"a late build without XMult should keep rerolling above its interest cap")
 rich_reroll.money = 56
-assert(not modules.Simulator.should_reroll(rich_reroll, { purchases = 0, supported_keys = {} }, 7),
+assert(not modules.Expert.should_reroll(rich_reroll, { purchases = 0, supported_keys = {} }, 7),
 	"a chained reroll must stop when its escalating cost would cross the interest cap")
 assert(modules.Simulator.next_reroll_cost(rich_reroll, 0) == 5
 	and modules.Simulator.next_reroll_cost(rich_reroll, 3) == 8,
@@ -256,22 +257,22 @@ chaos_reroll.jokers = { "j_chaos" }
 assert(modules.Simulator.next_reroll_cost(chaos_reroll, 0) == 0
 	and modules.Simulator.next_reroll_cost(chaos_reroll, 1) == 5,
 	"Chaos should make exactly the first reroll in each shop free")
-assert(modules.Simulator.should_reroll(chaos_reroll,
+assert(modules.Expert.should_reroll(chaos_reroll,
 	{ purchases = 1, supported_keys = { "j_joker" } }, 0),
 	"the bot should always consume Chaos's free reroll")
 rich_reroll.money = 5
-assert(not modules.Simulator.should_reroll(rich_reroll,
+assert(not modules.Expert.should_reroll(rich_reroll,
 	{ purchases = 0, supported_keys = {} }, 5),
 	"rerolls must preserve the strategy reserve")
 local conditional_reroll = modules.Simulator.new({ seed = "CONDITIONAL-REROLL", difficulty = "expert" }, modules)
 modules.Simulator.set_ante(conditional_reroll, 4)
 conditional_reroll.money = 34
 conditional_reroll.jokers = { "j_baron", "j_photograph" }
-assert(modules.Simulator.should_reroll(conditional_reroll,
+assert(modules.Expert.should_reroll(conditional_reroll,
 	{ purchases = 1, supported_keys = { "p_arcana_normal_1" } }, 5),
 	"conditional Baron and Photograph XMult should not hide a late reliable-power gap")
 conditional_reroll.jokers = { "j_cavendish" }
-assert(not modules.Simulator.should_reroll(conditional_reroll,
+assert(not modules.Expert.should_reroll(conditional_reroll,
 	{ purchases = 1, supported_keys = { "j_cavendish" } }, 5),
 	"reliable flat XMult should satisfy the late power check")
 local repeat_reroll = modules.Simulator.new({ seed = "REPEAT-REROLL", difficulty = "expert" }, modules)
@@ -279,11 +280,11 @@ modules.Simulator.set_ante(repeat_reroll, 4)
 repeat_reroll.money = 34
 repeat_reroll.jokers = { "j_card_sharp" }
 repeat_reroll.round_hand_usage = { ["Two Pair"] = 1 }
-assert(modules.Simulator.should_reroll(repeat_reroll,
+assert(modules.Expert.should_reroll(repeat_reroll,
 	{ purchases = 1, supported_keys = { "j_card_sharp" } }, 5),
 	"Card Sharp should not hide a power gap before its repeat-hand condition is proven")
 repeat_reroll.round_hand_usage["Two Pair"] = 2
-assert(not modules.Simulator.should_reroll(repeat_reroll,
+assert(not modules.Expert.should_reroll(repeat_reroll,
 	{ purchases = 1, supported_keys = { "j_card_sharp" } }, 5),
 	"Card Sharp should satisfy the power check after triggering in the latest blind")
 do
@@ -291,17 +292,17 @@ local poor_reroll = modules.Simulator.new({ seed = "POOR-REROLL", difficulty = "
 modules.Simulator.set_ante(poor_reroll, 5)
 poor_reroll.money = 8
 poor_reroll.jokers = { "j_joker" }
-assert(not modules.Simulator.should_reroll(poor_reroll,
+assert(not modules.Expert.should_reroll(poor_reroll,
 	{ purchases = 1, supported_keys = { "j_joker" } }, 5),
 	"a paid reroll without economy must not spend below the literal interest cap")
 poor_reroll.jokers = { "j_golden" }
-assert(modules.Simulator.should_reroll(poor_reroll,
+assert(modules.Expert.should_reroll(poor_reroll,
 	{ purchases = 1, supported_keys = { "j_golden" } }, 5),
 	"an income Joker should allow catch-up rerolls below the literal interest cap")
 poor_reroll.jokers = { "j_joker" }
 poor_reroll.money, poor_reroll.ante = 8, 3
 poor_reroll.previous_pvp_score, poor_reroll.previous_player_score = 13000, 88000
-assert(modules.Simulator.should_reroll(poor_reroll,
+assert(modules.Expert.should_reroll(poor_reroll,
 	{ purchases = 2, supported_keys = { "j_joker" } }, 5),
 	"a severe PvP deficit should fund an emergency power reroll despite prior purchases")
 end
@@ -1079,7 +1080,7 @@ modules.Simulator.set_ante(pressure_skipper, 4)
 pressure_skipper.money = 11
 pressure_skipper.jokers = { "j_joker", "j_jolly", "j_sly", "j_half", "j_abstract" }
 pressure_skipper.previous_pvp_dominant = true
-pressure_skipper.Policy = { should_skip_blind = function() return true end }
+pressure_skipper.Policy = setmetatable({ should_skip_blind = function() return true end }, { __index = pressure_skipper.Policy })
 local pressure_plan = modules.Simulator.plan_skips(pressure_skipper, "reactive", {
 	Small = "tag_meteor", Big = "tag_economy",
 })

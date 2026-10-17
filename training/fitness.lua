@@ -108,7 +108,7 @@ local function evaluate_seed(seed, weights, config, dependencies, opponent, metr
 	local state = dependencies.Simulator.new({
 		seed = seed, difficulty = config.difficulty or "expert", the_order = true,
 		weights = weights, content_catalog = dependencies.Content and dependencies.Content.defaults() or nil,
-	}, dependencies)
+	}, dependencies.Expert.modules(dependencies))
 	local reached, alive = 0, true
 	for ante = 1, tonumber(config.max_ante) or 5 do
 		reached = ante
@@ -118,7 +118,7 @@ local function evaluate_seed(seed, weights, config, dependencies, opponent, metr
 			local result = dependencies.Simulator.play_round(state, blind[2], blind[1])
 			record_blind(metrics, ante, result)
 			dependencies.Simulator.award_blind(state, blind[1], result)
-			dependencies.Simulator.visit_shop(state)
+			dependencies.Simulator.shop_phase(state)
 			if not result.cleared and config.stop_on_failed_blind ~= false then alive = false; break end
 		end
 		if not alive then break end
@@ -126,7 +126,7 @@ local function evaluate_seed(seed, weights, config, dependencies, opponent, metr
 			local boss = dependencies.Simulator.play_round(state, base * 2, "Boss")
 			record_blind(metrics, ante, boss)
 			dependencies.Simulator.award_blind(state, "Boss", boss)
-			dependencies.Simulator.visit_shop(state)
+			dependencies.Simulator.shop_phase(state)
 			if not boss.cleared and config.stop_on_failed_blind ~= false then alive = false; break end
 		else
 			local pvp = dependencies.Simulator.play_round(state, nil, "Boss", "PvP")
@@ -138,7 +138,7 @@ local function evaluate_seed(seed, weights, config, dependencies, opponent, metr
 			dependencies.Simulator.record_pvp_outcome(state, pvp.score, opponent_score)
 			pvp.life_lost = number(pvp.score) < number(opponent_score)
 			dependencies.Simulator.award_blind(state, "Boss", pvp)
-			dependencies.Simulator.visit_shop(state)
+			dependencies.Simulator.shop_phase(state)
 		end
 		if invalid_state(state) then metrics.invalid_actions = metrics.invalid_actions + 1; alive = false; break end
 	end

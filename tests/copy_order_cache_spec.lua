@@ -9,6 +9,7 @@ local modules = {
 	Order = dofile("bot/order.lua"),
 	Weights = dofile("bot/weights.lua"),
 }
+modules = dofile("bot/expert.lua").modules(modules)   -- MultiBots' Expert decides
 
 local state = modules.Simulator.new({
 	seed = "COPY-CACHE", difficulty = "expert", joker_limit = 7,
