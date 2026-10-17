@@ -153,6 +153,18 @@ jokers:
   j_yorick: 50             # Yorick
   j_chicot: 50             # Chicot
   j_perkeo: 50             # Perkeo
+  # MP joker reworks
+  j_mp_hanging_chad: 50       # Hanging Chad
+  j_mp_turtle_bean: 50        # Turtle Bean
+  j_mp_bloodstone: 50         # Bloodstone
+  j_mp_ticket: 50             # Golden Ticket
+  # MP exclusive jokers
+  j_mp_pacifist: 50          # Pacifist
+  j_mp_lets_go_gambling: 50  # Let's Go Gambling
+  j_mp_penny_pincher: 50     # Penny Pincher
+  j_mp_skip_off: 50          # Skip Off
+  j_mp_pizza_party: 50       # Pizza
+  j_mp_taxes: 50             # Taxes
 
 tarots:
   c_fool: 50               # The Fool
@@ -179,18 +191,19 @@ tarots:
   c_world: 50              # The World
 
 planets:
-  c_mercury: 50    # Mercury
-  c_venus: 50      # Venus
-  c_earth: 50      # Earth
-  c_mars: 50       # Mars
-  c_jupiter: 50    # Jupiter
-  c_saturn: 50     # Saturn
-  c_uranus: 50     # Uranus
-  c_neptune: 50    # Neptune
-  c_pluto: 50      # Pluto
-  c_planet_x: 50   # Planet X
-  c_ceres: 50      # Ceres
-  c_eris: 50       # Eris
+  c_mercury: 50     # Mercury
+  c_venus: 50       # Venus
+  c_earth: 50       # Earth
+  c_mars: 50        # Mars
+  c_jupiter: 50     # Jupiter
+  c_saturn: 50      # Saturn
+  c_uranus: 50      # Uranus
+  c_neptune: 50     # Neptune
+  c_pluto: 50       # Pluto
+  c_planet_x: 50    # Planet X
+  c_ceres: 50       # Ceres
+  c_eris: 50        # Eris
+  c_mp_asteroid: 50 # Asteroid
 
 spectrals:
   c_familiar: 50      # Familiar
