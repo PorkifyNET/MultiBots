@@ -41,5 +41,6 @@ luac.out
 
 # Project-specific files
 logs/
+!logs/.gitkeep
 notes/
 training/results/
