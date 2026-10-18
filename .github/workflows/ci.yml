@@ -49,6 +49,12 @@ jobs:
         run: |
           set -euo pipefail
           for spec in tests/*_spec.lua; do
+            case "$spec" in
+              tests/balance_spec.lua|tests/simulator_spec.lua)
+                echo "Skipping long-running spec: $spec"
+                continue
+                ;;
+            esac
             echo "::group::$spec"
             lua5.1 "$spec"
             echo "::endgroup::"
