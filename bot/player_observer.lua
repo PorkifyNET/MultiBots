@@ -25,6 +25,12 @@ local function event_card(event)
 	if type(card) == "table" and (card.config or card.base) then return card end
 end
 
+local function poker_hand(cards)
+	if type(get_poker_hand_info) ~= "function" or #(cards or {}) == 0 then return nil end
+	local ok, hand = pcall(get_poker_hand_info, cards)
+	if ok and type(hand) == "string" and hand ~= "" then return hand end
+end
+
 local function record_action(dependencies, action, event)
 	if not dependencies.is_active() then return end
 	local loggers = dependencies.get_loggers and dependencies.get_loggers()
@@ -49,6 +55,7 @@ local function record_action(dependencies, action, event)
 		money = game.dollars,
 		hand = encoded_cards(hand and hand.cards),
 		selected = encoded_cards(highlighted),
+		poker_hand = action == "play" and poker_hand(highlighted) or nil,
 		target = encode_card(target),
 		jokers = encoded_cards(G.jokers and G.jokers.cards),
 	}

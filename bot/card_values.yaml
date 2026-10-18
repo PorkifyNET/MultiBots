@@ -5,15 +5,15 @@
 jokers:
   j_joker: 50              # Joker
   j_greedy_joker: 50       # Greedy Joker
-  j_lusty_joker: 44        # Lusty Joker
+  j_lusty_joker: 38        # Lusty Joker
   j_wrathful_joker: 42     # Wrathful Joker
   j_gluttenous_joker: 50   # Gluttonous Joker
-  j_jolly: 50              # Jolly Joker
+  j_jolly: 44              # Jolly Joker
   j_zany: 50               # Zany Joker
-  j_mad: 50                # Mad Joker
+  j_mad: 46                # Mad Joker
   j_crazy: 50              # Crazy Joker
   j_droll: 50              # Droll Joker
-  j_sly: 44                # Sly Joker
+  j_sly: 38                # Sly Joker
   j_wily: 50               # Wily Joker
   j_clever: 44             # Clever Joker
   j_devious: 50            # Devious Joker
@@ -36,14 +36,14 @@ jokers:
   j_fibonacci: 50          # Fibonacci
   j_steel_joker: 42        # Steel Joker
   j_scary_face: 50         # Scary Face
-  j_abstract: 55           # Abstract Joker
+  j_abstract: 60           # Abstract Joker
   j_delayed_grat: 42       # Delayed Gratification
-  j_hack: 50               # Hack
+  j_hack: 55               # Hack
   j_pareidolia: 50         # Pareidolia
   j_gros_michel: 40        # Gros Michel
   j_even_steven: 50        # Even Steven
   j_odd_todd: 40           # Odd Todd
-  j_scholar: 45            # Scholar
+  j_scholar: 40            # Scholar
   j_business: 50           # Business Card
   j_supernova: 60          # Supernova
   j_ride_the_bus: 50       # Ride the Bus
@@ -60,14 +60,14 @@ jokers:
   j_constellation: 44      # Constellation
   j_hiker: 50              # Hiker
   j_faceless: 50           # Faceless Joker
-  j_green_joker: 50        # Green Joker
-  j_superposition: 50      # Superposition
+  j_green_joker: 58        # Green Joker
+  j_superposition: 55      # Superposition
   j_todo_list: 50          # To Do List
   j_cavendish: 50          # Cavendish
-  j_card_sharp: 50         # Card Sharp
+  j_card_sharp: 58         # Card Sharp
   j_red_card: 50           # Red Card
   j_madness: 50            # Madness
-  j_square: 56             # Square Joker
+  j_square: 62             # Square Joker
   j_seance: 50             # Seance
   j_riff_raff: 50          # Riff-raff
   j_vampire: 50            # Vampire
@@ -80,21 +80,21 @@ jokers:
   j_obelisk: 55            # Obelisk
   j_midas_mask: 42         # Midas Mask
   j_luchador: 50           # Luchador
-  j_photograph: 40         # Photograph
+  j_photograph: 42         # Photograph
   j_gift: 50               # Gift Card
   j_turtle_bean: 50        # Turtle Bean
   j_erosion: 50            # Erosion
   j_reserved_parking: 58   # Reserved Parking
   j_mail: 50               # Mail-In Rebate
   j_to_the_moon: 50        # To the Moon
-  j_hallucination: 50      # Hallucination
+  j_hallucination: 58      # Hallucination
   j_fortune_teller: 50     # Fortune Teller
   j_juggler: 50            # Juggler
   j_drunkard: 43           # Drunkard
   j_stone: 50              # Stone Joker
   j_golden: 50             # Golden Joker
   j_lucky_cat: 50          # Lucky Cat
-  j_baseball: 38           # Baseball Card
+  j_baseball: 34           # Baseball Card
   j_bull: 42               # Bull
   j_diet_cola: 50          # Diet Cola
   j_trading: 50            # Trading Card
@@ -130,10 +130,10 @@ jokers:
   j_merry_andy: 50         # Merry Andy
   j_oops: 50               # Oops! All 6s
   j_idol: 40               # The Idol
-  j_seeing_double: 50      # Seeing Double
+  j_seeing_double: 53      # Seeing Double
   j_matador: 50            # Matador
   j_hit_the_road: 50       # Hit the Road
-  j_duo: 50                # The Duo
+  j_duo: 55                # The Duo
   j_trio: 50               # The Trio
   j_family: 50             # The Family
   j_order: 50              # The Order
@@ -150,17 +150,17 @@ jokers:
   j_bootstraps: 65         # Bootstraps
   j_caino: 50              # Caino
   j_triboulet: 50          # Triboulet
-  j_yorick: 50             # Yorick
+  j_yorick: 62             # Yorick
   j_chicot: 50             # Chicot
   j_perkeo: 50             # Perkeo
   # MP joker reworks
-  j_mp_hanging_chad: 47       # Hanging Chad
-  j_mp_turtle_bean: 50        # Turtle Bean
+  j_mp_hanging_chad: 48       # Hanging Chad
+  j_mp_turtle_bean: 55        # Turtle Bean
   j_mp_bloodstone: 65         # Bloodstone
   j_mp_ticket: 50             # Golden Ticket
   # MP exclusive jokers
   j_mp_pacifist: 50          # Pacifist
-  j_mp_lets_go_gambling: 50  # Let's Go Gambling
+  j_mp_lets_go_gambling: 44  # Let's Go Gambling
   j_mp_penny_pincher: 50     # Penny Pincher
   j_mp_skip_off: 50          # Skip Off
   j_mp_pizza: 50             # Pizza
