@@ -284,7 +284,7 @@ local function render_report(result, values)
 		"Decision %s followed a plan change with %.1fx score variance", tostring(variance.id), variance.ratio) end
 	local lines = { "MATCH QUALITY REPORT", "", string.format("Result: %s, Ante %s", tostring(result),
 		tostring(values and values.ante or "?")), "", "High-priority review:", "" }
-	lines[#lines + 1] = "Player-win review:"
+	lines[#lines + 1] = result == "winGame" and "Bot-win review:" or "Player-win review:"
 	lines[#lines + 1] = "Observed player actions:"
 	local player_action_count = 0
 	for _, action in ipairs(sorted_keys(summary.player_actions)) do
@@ -422,7 +422,7 @@ function Logger.finish(result, values)
 		variance = #Logger.summary.variance, threshold = Logger.summary.threshold,
 	})
 	Logger.write("END", values)
-	if result == "loseGame" and Logger.report_path then
+	if (result == "loseGame" or result == "winGame") and Logger.report_path then
 		NFS.write(Logger.report_path, render_report(result, values))
 	end
 	local path = Logger.path

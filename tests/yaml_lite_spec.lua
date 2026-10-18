@@ -39,6 +39,10 @@ assert(YamlLite.load("tests/fixtures/does_not_exist.yaml") == nil, "a missing fi
 
 local values = YamlLite.load("bot/card_values.yaml")
 assert(values and values.jokers.j_joker == 50, "the shipped card values should parse")
+assert(values.jokers.j_mp_pizza == 50 and values.jokers.j_mp_pizza_party == nil,
+	"Pizza's card-value key should match its content key")
+assert(values.spectrals.c_mp_ouija_standard == 50,
+	"Multiplayer Ouija should have an adjustable card value")
 
 expect_error("a:\n\tb: 1\n", "card_values.yaml line 2: tabs are not allowed", "tab indentation")
 expect_error("a: 1\nb: fast\n", "card_values.yaml line 2: value is not a number: b: fast", "non-number value")

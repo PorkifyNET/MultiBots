@@ -538,6 +538,22 @@ assert(use(ouija, "c_ouija"))
 for _, c in ipairs(ouija.deck) do assert(c.rank == ouija.deck[1].rank, "Ouija gives the hand one rank") end
 assert(ouija.hand_size_bonus == -1, "Ouija: -1 hand size")
 
+local mp_ouija_tool = {
+	key = "c_mp_ouija_standard", type = "deck_tool", set = "Spectral",
+	effect = "hand_rank", destroy_count = 3,
+}
+local mp_ouija = new_state(base, "SPECTRAL-MP-OUIJA", {}, { deck = deck_of(8, 5) })
+for index, c in ipairs(mp_ouija.deck) do c.rank = index + 2 end
+assert(Simulator.consumable_usable(mp_ouija, mp_ouija_tool))
+assert(Simulator.apply_consumable(mp_ouija, mp_ouija_tool))
+assert(#mp_ouija.deck == 5, "Multiplayer Ouija destroys three cards")
+for _, c in ipairs(mp_ouija.deck) do
+	assert(c.rank == mp_ouija.deck[1].rank, "Multiplayer Ouija gives each survivor one rank")
+end
+local short_mp_ouija = new_state(base, "SPECTRAL-MP-OUIJA-SHORT", {}, { deck = deck_of(2, 5) })
+assert(not Simulator.consumable_usable(short_mp_ouija, mp_ouija_tool),
+	"Multiplayer Ouija needs at least three cards in hand")
+
 -- Black Hole levels every hand.
 local hole = new_state(base, "SPECTRAL-HOLE", {})
 assert(use(hole, "c_black_hole"))
