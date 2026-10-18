@@ -1130,6 +1130,10 @@ end
 
 local function is_bot_player(player_id)
 	if not player_id then return false end
+	-- The shared bot-ID set is filled from the bots' own IDs, which can arrive
+	-- after the lobby roster already lists them. A bot must never take itself
+	-- for a human: it would then wait for its own hands before playing any.
+	if Peer.player_id and tostring(player_id) == tostring(Peer.player_id) then return true end
 	for key, value in pairs((MP and MP.LOBBY and MP.LOBBY.multibots_bot_ids) or {}) do
 		local id = type(key) == "number" and value or (value and key or nil)
 		if id and tostring(id) == tostring(player_id) then return true end

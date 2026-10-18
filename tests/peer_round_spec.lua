@@ -375,6 +375,30 @@ Peer.lobby_players = nil
 Peer.player_id, Peer.nemesis_id = nil, nil
 pvp_steps = previous_pvp_steps
 
+-- The lobby roster can list a bot before the shared bot-ID set knows it (the
+-- set is filled from the bots' own IDs, which arrive with their join reply).
+-- The bot must never wait for its own hand count as if it belonged to a human.
+sent = {}
+MP.LOBBY.players = { { id = "host" }, { id = "bot-self" } }
+MP.LOBBY.multibots_bot_ids = {}
+MP.LOBBY.multibots_human_hands = nil
+Peer.lobby_players = nil
+Peer.player_id, Peer.nemesis_id = "bot-self", "host"
+Peer.in_game, Peer.ante, Peer.pvp = true, 2, false
+Peer.player_lives_by_id = { host = 3, ["bot-self"] = 3 }
+pvp_steps = 0
+Peer.handle({ action = "startBlind" })
+assert(pvp_steps == 0, "the bot should wait for the human's opening PvP hand")
+Peer.handle({ action = "enemyInfo", playerId = "host", handsLeft = 3, score = 100, lives = 3 })
+assert(pvp_steps == 2 and Peer.bot_hands == 3,
+	"a bot missing from the shared bot-ID set must not gate its own PvP hands")
+MP.LOBBY.players = nil
+MP.LOBBY.multibots_bot_ids = nil
+MP.LOBBY.multibots_human_hands = nil
+Peer.player_id, Peer.nemesis_id = nil, nil
+Peer.player_lives_by_id = {}
+pvp_steps = previous_pvp_steps
+
 MP.LOBBY.multibots_bot_ids = { ["bot-a"] = true, ["bot-b"] = true }
 Peer.player_id, Peer.nemesis_id = "bot-b", nil
 Peer.player_lives_by_id, Peer.pvp_scores_by_id, Peer.last_pvp_scores_by_id = {}, {}, {}
