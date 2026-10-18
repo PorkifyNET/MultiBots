@@ -1,0 +1,283 @@
+name: Repository guard and approval
+
+on:
+  pull_request_target:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+
+concurrency:
+  group: repository-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  guard:
+    name: Repository Guard
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      # This privileged workflow only reads GitHub API metadata. It deliberately
+      # does not check out, download, or execute code from the pull request.
+      - name: Check repository integrity and approve
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pullNumber = context.payload.pull_request.number;
+            const initialHeadSha = context.payload.pull_request.head.sha;
+            const metadataOwner = 'PorkyLIVE';
+
+            // Changes to repository controls always require two human reviewers.
+            const protectedFiles = new Set([
+              '.gitattributes',
+              '.gitignore',
+              'LICENSE',
+            ]);
+            const protectedPrefixes = ['.github/'];
+
+            // These files may be edited normally, but removing or renaming them
+            // is too destructive for an automatic approval.
+            const requiredFiles = new Set([
+              'MultiBots.json',
+              'README.md',
+              'config.lua',
+              'generator.lua',
+              'main.lua',
+            ]);
+
+            const limits = {
+              changedFiles: 100,
+              deletedFiles: 5,
+              deletedLines: 2500,
+            };
+
+            const current = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pullNumber,
+            });
+            if (current.data.state !== 'open' || current.data.draft) {
+              core.notice('The pull request is closed or still a draft.');
+              return;
+            }
+            if (current.data.base.ref !== 'main') {
+              core.setFailed('The pull request no longer targets main.');
+              return;
+            }
+            if (current.data.head.sha !== initialHeadSha) {
+              core.setFailed('The pull request changed while the guard was starting.');
+              return;
+            }
+            const isRepositoryOwner =
+              current.data.user.login.toLowerCase() === metadataOwner.toLowerCase();
+
+            const files = await github.paginate(
+              github.rest.pulls.listFiles,
+              { owner, repo, pull_number: pullNumber, per_page: 100 },
+            );
+            const violations = [];
+            const blockingViolations = [];
+            const deleted = files.filter((file) => file.status === 'removed');
+            const deletedLines = files.reduce((total, file) => total + file.deletions, 0);
+
+            const readManifest = async (ref) => {
+              const response = await github.rest.repos.getContent({
+                owner,
+                repo,
+                path: 'MultiBots.json',
+                ref,
+              });
+              if (Array.isArray(response.data) || response.data.type !== 'file') {
+                throw new Error('MultiBots.json is not a file');
+              }
+              return JSON.parse(Buffer.from(response.data.content, 'base64').toString('utf8'));
+            };
+
+            const versionPattern = /^(\d+)\.(\d+)\.(\d+)(?:~([0-9A-Za-z][0-9A-Za-z.-]*))?$/;
+            const parseVersion = (value) => {
+              if (typeof value !== 'string') return null;
+              const match = value.match(versionPattern);
+              if (!match) return null;
+              return {
+                core: match.slice(1, 4).map(Number),
+                revision: match[4] ?? null,
+              };
+            };
+            const compareRevision = (left, right) => {
+              const tokenize = (value) => value.toLowerCase().match(/\d+|[^\d]+/g) ?? [];
+              const leftParts = tokenize(left);
+              const rightParts = tokenize(right);
+              for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+                if (leftParts[index] === undefined) return -1;
+                if (rightParts[index] === undefined) return 1;
+                const leftNumber = /^\d+$/.test(leftParts[index]);
+                const rightNumber = /^\d+$/.test(rightParts[index]);
+                if (leftNumber && rightNumber) {
+                  const difference = Number(leftParts[index]) - Number(rightParts[index]);
+                  if (difference !== 0) return Math.sign(difference);
+                } else if (leftParts[index] !== rightParts[index]) {
+                  return leftParts[index] < rightParts[index] ? -1 : 1;
+                }
+              }
+              return 0;
+            };
+            const compareVersions = (left, right) => {
+              for (let index = 0; index < 3; index += 1) {
+                if (left.core[index] !== right.core[index]) {
+                  return Math.sign(left.core[index] - right.core[index]);
+                }
+              }
+              if (left.revision === null && right.revision === null) return 0;
+              if (left.revision === null) return 1;
+              if (right.revision === null) return -1;
+              return compareRevision(left.revision, right.revision);
+            };
+
+            try {
+              const baseManifest = await readManifest(current.data.base.sha);
+              const headManifest = await readManifest(initialHeadSha);
+              const identityFields = ['id', 'prefix', 'main_file', 'author'];
+              const changedIdentityFields = identityFields.filter((field) =>
+                JSON.stringify(baseManifest[field]) !== JSON.stringify(headManifest[field])
+              );
+              if (changedIdentityFields.length > 0 && !isRepositoryOwner) {
+                blockingViolations.push(
+                  `Only ${metadataOwner} may change protected MultiBots.json fields: ` +
+                  changedIdentityFields.map((field) => `\`${field}\``).join(', '),
+                );
+              }
+
+              const baseVersion = parseVersion(baseManifest.version);
+              const headVersion = parseVersion(headManifest.version);
+              if (!headVersion) {
+                blockingViolations.push(
+                  'MultiBots.json `version` must use `major.minor.patch` with an optional ' +
+                  '`~revision` prerelease suffix.',
+                );
+              } else if (!baseVersion) {
+                blockingViolations.push(
+                  'The main-branch MultiBots.json version is invalid; automatic comparison is unsafe.',
+                );
+              } else if (compareVersions(headVersion, baseVersion) < 0) {
+                blockingViolations.push(
+                  `MultiBots.json version may not decrease: \`${headManifest.version}\` is lower than ` +
+                  `main's \`${baseManifest.version}\`.`,
+                );
+              }
+            } catch (error) {
+              blockingViolations.push(`MultiBots.json could not be validated: ${error.message}`);
+            }
+
+            for (const file of files) {
+              const controlFile = protectedFiles.has(file.filename) ||
+                protectedPrefixes.some((prefix) => file.filename.startsWith(prefix));
+              if (controlFile && !isRepositoryOwner) {
+                violations.push(`Repository control file changed: \`${file.filename}\``);
+              }
+
+              const removedName = file.status === 'renamed'
+                ? file.previous_filename
+                : file.status === 'removed' ? file.filename : null;
+              if (removedName && requiredFiles.has(removedName)) {
+                violations.push(`Required project file removed or renamed: \`${removedName}\``);
+              }
+            }
+
+            if (files.length > limits.changedFiles) {
+              violations.push(
+                `Too many files changed for automatic approval: ${files.length} > ${limits.changedFiles}`,
+              );
+            }
+            if (deleted.length > limits.deletedFiles) {
+              violations.push(
+                `Too many files deleted for automatic approval: ${deleted.length} > ${limits.deletedFiles}`,
+              );
+            }
+            if (deletedLines > limits.deletedLines) {
+              violations.push(
+                `Too many lines deleted for automatic approval: ${deletedLines} > ${limits.deletedLines}`,
+              );
+            }
+
+            // A commit pushed during inspection must receive a fresh guard run.
+            const latest = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pullNumber,
+            });
+            if (latest.data.head.sha !== initialHeadSha) {
+              core.setFailed('The pull request changed during inspection; refusing stale approval.');
+              return;
+            }
+
+            const allViolations = [...blockingViolations, ...violations];
+            if (allViolations.length > 0) {
+              await github.rest.pulls.createReview({
+                owner,
+                repo,
+                pull_number: pullNumber,
+                commit_id: initialHeadSha,
+                event: 'COMMENT',
+                body: [
+                  '## Repository guard withheld automatic approval',
+                  '',
+                  ...allViolations.map((violation) => `- ${violation}`),
+                  '',
+                  blockingViolations.length > 0
+                    ? 'The manifest policy must be fixed before this change can merge.'
+                    : 'This change is not rejected, but it requires two human approvals.',
+                ].join('\n'),
+              });
+              if (blockingViolations.length > 0) {
+                core.setFailed(`${blockingViolations.length} required manifest policy rule(s) failed.`);
+              } else {
+                core.warning(`${violations.length} repository-integrity rule(s) require two human reviews.`);
+              }
+              return;
+            }
+
+            const reviews = await github.paginate(
+              github.rest.pulls.listReviews,
+              { owner, repo, pull_number: pullNumber, per_page: 100 },
+            );
+            const alreadyApproved = reviews.some((review) =>
+              review.user?.login === 'github-actions[bot]' &&
+              review.state === 'APPROVED' &&
+              review.commit_id === initialHeadSha
+            );
+            if (alreadyApproved) {
+              core.notice('github-actions[bot] already approved this commit.');
+              return;
+            }
+
+            await github.rest.pulls.createReview({
+              owner,
+              repo,
+              pull_number: pullNumber,
+              commit_id: initialHeadSha,
+              event: 'APPROVE',
+              body: [
+                'Repository integrity checks passed.',
+                '',
+                '- Repository-control changes, if any, were made by the repository owner',
+                '- No required project files were removed or renamed',
+                '- Protected MultiBots.json identity fields passed owner checks',
+                '- MultiBots.json version format and ordering are valid',
+                '- Change and deletion limits were respected',
+                '',
+                'This approval covers repository integrity, not functional correctness.',
+                `Approved commit \`${initialHeadSha.slice(0, 12)}\`.`,
+              ].join('\n'),
+            });
