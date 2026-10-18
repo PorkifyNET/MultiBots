@@ -111,8 +111,11 @@ end
 local bot_win_path = Logger.start({ difficulty = "expert", seed = "TEST" })
 Logger.finish("winGame", { ante = 4 })
 local bot_win_report_path = bot_win_path:gsub("%.log$", ".report.txt")
-assert(files[bot_win_report_path] == nil,
-	"bot wins should not create a strategy report")
+assert(files[bot_win_report_path]
+	and files[bot_win_report_path]:match("Result: winGame, Ante 4")
+	and files[bot_win_report_path]:match("Bot%-win review:")
+	and not files[bot_win_report_path]:match("Player%-win review:"),
+	"bot wins should create a correctly labelled strategy report")
 
 SMODS = nil
 assert(Logger.start({}) == nil, "logging should remain disabled when the mod is unavailable")

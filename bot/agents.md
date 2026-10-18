@@ -1,0 +1,1 @@
+If the prompt consists of a copy-pasted end-of-run bot report, analyse it. bot/card_values.yaml is the primary location to change card weights, nowhere else. If a card's functionality, or the bot's handling of a card, has to be changed, minimal changes should be made to any other files. Do not run the tests.

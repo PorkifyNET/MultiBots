@@ -80,13 +80,14 @@ Full replay state is stored separately in
 keeps routine decision lines small while retaining exact deck, draw, Joker, and
 resource state when a case is selected for review.
 
-The logger writes `logs/multibots-<timestamp>.report.txt` only when the player
-beats the bot. The report includes PvP scores, both final builds, and captured
-player plays, discards, and shop actions with pre-action state. It names weight
-areas to review, but does not infer a weight-change direction or update weights:
-one run does not prove which preference caused the win. Bot wins retain the
-compact decision log without a strategy report. Technical information is
-separate and lazy: a `multibots-debug-<timestamp>.log` is created only when
+The logger writes `logs/multibots-<timestamp>.report.txt` after bot wins and
+losses. The report includes PvP scores, both final builds, and captured player
+plays, discards, and shop actions with pre-action state. Bot-win reports provide
+successful build and decision evidence; player-win reports expose potential
+tuning targets. Reports name weight areas to review, but do not infer a
+weight-change direction or update weights: one run does not prove which
+preference caused the result. Technical information is separate and lazy: a
+`multibots-debug-<timestamp>.log` is created only when
 MultiBots records a network/runtime/invalid-action problem. Lovely remains
 useful when game state and bot state disagree, a hook fails, or a crash
 prevents the normal report.

@@ -1,4 +1,5 @@
 local Simulator = {}
+local unpack_values = table.unpack or unpack
 
 local function copy_array(source)
 	local out = {}
@@ -380,7 +381,7 @@ local function apply_deck_tool(state, tool, stream)
 	elseif tool.effect == "immolate" then
 		-- Immolate destroys 5 random cards of the hand (pseudoshuffle 'immolate').
 		for index = 1, math.min(tool.count or 5, #in_hand - 1) do remove_card(state.deck, in_hand[index]) end
-		note_cards_destroyed(state, { unpack(in_hand, 1, math.min(tool.count or 5, #in_hand - 1)) }, 0)
+		note_cards_destroyed(state, { unpack_values(in_hand, 1, math.min(tool.count or 5, #in_hand - 1)) }, 0)
 		state.money = state.money + 20
 	elseif tool.effect == "rank" then
 		for index, card in ipairs(targets) do
@@ -458,11 +459,24 @@ local function apply_deck_tool(state, tool, stream)
 		end
 	elseif (tool.effect == "hand_suit" or tool.effect == "hand_rank") and #in_hand > 1 then
 		-- Sigil: every card in hand becomes one random suit. Ouija: one random
-		-- rank, and the hand size drops by 1.
+		-- rank, and the hand size drops by 1. Multiplayer Ouija instead destroys
+		-- three random cards before converting the survivors.
 		local suit = tool.effect == "hand_suit"
 			and ({ "Spades", "Hearts", "Diamonds", "Clubs" })[stream:integer(1, 4)] or nil
 		local rank = tool.effect == "hand_rank" and stream:integer(2, 14) or nil
-		for index, card in ipairs(in_hand) do
+		local first_survivor = 1
+		if tool.effect == "hand_rank" and tool.destroy_count then
+			local destroyed_count = math.min(tool.destroy_count, #in_hand)
+			local destroyed = {}
+			for index = 1, destroyed_count do
+				destroyed[index] = in_hand[index]
+				remove_card(state.deck, in_hand[index])
+			end
+			note_cards_destroyed(state, destroyed, 0)
+			first_survivor = destroyed_count + 1
+		end
+		for index = first_survivor, #in_hand do
+			local card = in_hand[index]
 			card.suit = suit or card.suit
 			card.rank = rank or card.rank
 			state.Cards.refresh(card, ":" .. tool.key .. ":" .. state.ante .. ":" .. state.round .. ":" .. index)
@@ -1930,7 +1944,7 @@ local function spectral_usable(state, consumable)
 		return #editionless_joker_slots(state) > 0
 	end
 	if effect == "create_cards" or effect == "hand_suit" or effect == "hand_rank" then
-		return #(state.deck or {}) > 1
+		return #(state.deck or {}) >= math.max(2, tonumber(consumable.destroy_count) or 2)
 	end
 	return nil
 end

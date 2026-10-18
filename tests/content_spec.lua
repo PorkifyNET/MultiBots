@@ -183,6 +183,15 @@ local violet_chad_reported = Content.build({
 assert(#violet_chad_reported.jokers == 4 and Content.summary(violet_chad_reported).skipped == 0,
 	"reported Violet Chad Jokers should have headless adapters")
 
+local bold_hierophant_reported = Content.build({
+	Spectral = { { key = "c_mp_ouija_standard", cost = 4, config = { extra = { destroy = 3 } } } },
+}, {}, {})
+assert(#bold_hierophant_reported.deck_tools == 1
+	and bold_hierophant_reported.deck_tools[1].key == "c_mp_ouija_standard"
+	and bold_hierophant_reported.deck_tools[1].destroy_count == 3
+	and Content.summary(bold_hierophant_reported).skipped == 0,
+	"Multiplayer Ouija should expose its three-card destruction adapter")
+
 local jolly_midas_reported = Content.build({
 	Planet = { { key = "c_planet_x", cost = 3, config = { hand_type = "Five of a Kind" } } },
 	Joker = {

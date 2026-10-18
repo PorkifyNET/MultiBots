@@ -1345,6 +1345,19 @@ local function shop_candidate(state, offer, offer_index, reserve_before)
 	return candidate
 end
 
+-- A Negative Joker raises `joker_limit`, but occupying its new capacity does
+-- not consume one of the build's ordinary slots. Let a modest positive Joker
+-- use that otherwise-wasted capacity; normal empty slots keep the stricter
+-- threshold so the bot does not buy every early filler it sees.
+local function negative_bonus_slot_open(state)
+	local negatives = 0
+	for _, edition in pairs(state.joker_editions or {}) do
+		if edition == "negative" then negatives = negatives + 1 end
+	end
+	local count, limit = #(state.jokers or {}), state.joker_limit or 5
+	return negatives > 0 and count < limit and count >= limit - negatives
+end
+
 -- The old purchase-loop body (affordable build, free-negative scan, choose_shop),
 -- verbatim; indentation kept for merging. Returns choice, affordable, reserve.
 local function expert_shop_choice(state, session, counts, offers)
@@ -1424,13 +1437,14 @@ local function expert_shop_choice(state, session, counts, offers)
 			elseif offer.type == "joker" and R.joker_available(state, offer.key) then
 				local slot_available = #state.jokers < state.joker_limit or offer.edition == "negative"
 				local free_negative = offer.edition == "negative" and offer.cost == 0
+				local minimum = negative_bonus_slot_open(state) and 1 or 14
 				if free_negative then
 					candidate.free_negative = true
 					candidate.utility = math.max(100, candidate.utility)
 				end
 				if capacity_available and enabler_ready and slot_available and can_spend
-					and ((offer.utility or 0) >= 14 or free_negative)
-					and (candidate.utility >= 14 or free_negative) then
+					and ((offer.utility or 0) >= minimum or free_negative)
+					and (candidate.utility >= minimum or free_negative) then
 					affordable[#affordable + 1] = candidate
 				elseif enabler_ready and #state.jokers >= state.joker_limit then
 					local index, weakest = weakest_joker(state)

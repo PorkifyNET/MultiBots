@@ -555,6 +555,9 @@ local deck_tool_definitions = {
 	{ key = "c_sigil", set = "Spectral", cost = 4, effect = "hand_suit", spectral = true },
 	-- Ouija: every card in hand becomes one random rank, -1 hand size.
 	{ key = "c_ouija", set = "Spectral", cost = 4, effect = "hand_rank", hand_size = -1, spectral = true },
+	-- Multiplayer Ouija: destroy three random cards, then give the rest one random rank.
+	{ key = "c_mp_ouija_standard", set = "Spectral", cost = 4, effect = "hand_rank",
+		destroy_count = 3, spectral = true, multiplayer = true },
 	{ key = "c_ectoplasm", set = "Spectral", cost = 4, effect = "negative_joker", spectral = true },
 	{ key = "c_ankh", set = "Spectral", cost = 4, effect = "duplicate_joker", spectral = true },
 	{ key = "c_hex", set = "Spectral", cost = 4, effect = "polychrome_joker", spectral = true },

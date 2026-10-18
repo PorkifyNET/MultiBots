@@ -215,6 +215,7 @@ return {
 		c_wraith = 30,             -- Wraith
 		c_sigil = 20,              -- Sigil
 		c_ouija = 16,              -- Ouija
+		c_mp_ouija_standard = 18,  -- Multiplayer: Ouija
 		c_ectoplasm = 28,          -- Ectoplasm
 		c_immolate = 35,           -- Immolate
 		c_ankh = 26,               -- Ankh
