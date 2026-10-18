@@ -46,8 +46,16 @@ local function new_summary(metadata)
 		seen_unknown_vouchers = {},
 		final = {},
 		player_actions = {},
+		hands = { bot = {}, player = {} },
 		reorders = {}, invalid = {}, variance = {}, previous_play = nil, last_hand = nil,
 	}
+end
+
+local function count_hand(summary, side, hand)
+	hand = tostring(hand or "")
+	if hand == "" or hand == "none" then return end
+	local counts = summary.hands[side]
+	counts[hand] = (counts[hand] or 0) + 1
 end
 
 local function held_count(value)
@@ -151,6 +159,7 @@ local function observe(kind, values)
 	elseif kind == "PLAYER_ACTION" then
 		local action = tostring(values.action or "unknown")
 		summary.player_actions[action] = (summary.player_actions[action] or 0) + 1
+		if action == "play" then count_hand(summary, "player", values.poker_hand) end
 		summary.player_action_samples = summary.player_action_samples or {}
 		if #summary.player_action_samples < 30 then
 			summary.player_action_samples[#summary.player_action_samples + 1] = values
@@ -182,6 +191,7 @@ local function observe(kind, values)
 				or order:find("j_brainstorm", 1, true) ~= nil
 			summary.reorders[key] = entry
 		elseif action == "play" then
+			count_hand(summary, "bot", values.hand)
 			local score = tonumber(values.score) or 0
 			local current_plan = plan_key(values)
 			local previous = summary.previous_play
@@ -242,10 +252,27 @@ local function card_frequencies(deck)
 	return ranked
 end
 
-local function append_final_build(lines, label, final)
+local function most_played_hand(counts)
+	local best, best_count
+	for hand, count in pairs(counts or {}) do
+		if not best_count or count > best_count or (count == best_count and hand < best) then
+			best, best_count = hand, count
+		end
+	end
+	return best, best_count
+end
+
+local function append_final_build(lines, label, final, hand_counts)
 	final = final or {}
 	lines[#lines + 1] = ""
 	lines[#lines + 1] = label .. " final build:"
+	local hand, plays = most_played_hand(hand_counts)
+	if hand then
+		lines[#lines + 1] = string.format("Most played poker hand: %s (%d %s)",
+			hand, plays, plays == 1 and "play" or "plays")
+	else
+		lines[#lines + 1] = "Most played poker hand: unavailable"
+	end
 	local details = split(final.joker_details, ",")
 	if #details == 0 then details = split(final.jokers, ",") end
 	if #details == 0 then
@@ -338,8 +365,8 @@ local function render_report(result, values)
 	lines[#lines + 1] = string.format("PvP: %d wins, %d losses", wins, losses)
 	for _, item in ipairs(summary.pvp) do lines[#lines + 1] = string.format(
 		"- Ante %s: %s by %.0f", tostring(item.ante), item.won and "win" or "loss", math.abs(item.margin)) end
-	append_final_build(lines, "Bot", summary.final.bot)
-	append_final_build(lines, "Player", summary.final.player)
+	append_final_build(lines, "Bot", summary.final.bot, summary.hands.bot)
+	append_final_build(lines, "Player", summary.final.player, summary.hands.player)
 	lines[#lines + 1] = string.format("Joker lifecycle events: %d", #summary.lifecycle)
 	for _, item in ipairs(summary.lifecycle) do lines[#lines + 1] = "- " .. item end
 	lines[#lines + 1] = string.format("Unsupported objects: %d unique, %d encounters", unknown_unique, unknown_total)

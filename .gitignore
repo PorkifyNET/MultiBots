@@ -45,3 +45,5 @@ logs/
 notes/
 training/results/
 tools/__pycache__/
+bot/card_values.yaml
+agents.md

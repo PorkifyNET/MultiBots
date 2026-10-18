@@ -15,15 +15,15 @@ Logger.write("DECISION", { decision_id = 42, action = "play", regret = 30,
 Logger.write("DECISION", { decision_id = 46, action = "play", regret = 82.1,
 	best_utility = 10431.2, snapshot = "hand:C D" })
 Logger.write("DECISION", { decision_id = 47, action = "play", score = 100,
-	plan_primary = "Pair", ante = 1, round = "Small", jokers = "j_joker" })
+	hand = "Pair", plan_primary = "Pair", ante = 1, round = "Small", jokers = "j_joker" })
 Logger.write("DECISION", { decision_id = 48, action = "play", score = 1000,
-	plan_primary = "Two Pair", ante = 1, round = "Small", jokers = "j_joker" })
+	hand = "Two Pair", plan_primary = "Two Pair", ante = 1, round = "Small", jokers = "j_joker" })
 Logger.write("DECISION", { decision_id = 49, action = "play", score = 100,
-	plan_primary = "Pair", ante = 1, round = "Big", jokers = "j_joker" })
+	hand = "Pair", plan_primary = "Pair", ante = 1, round = "Big", jokers = "j_joker" })
 Logger.write("DECISION", { decision_id = 50, action = "play", score = 100,
-	plan_primary = "Pair", plan_secondary = "Two Pair", ante = 1, round = "Boss", jokers = "j_joker" })
+	hand = "Pair", plan_primary = "Pair", plan_secondary = "Two Pair", ante = 1, round = "Boss", jokers = "j_joker" })
 Logger.write("DECISION", { decision_id = 51, action = "play", score = 1000,
-	plan_primary = "Two Pair", plan_secondary = "Pair", ante = 1, round = "Boss", jokers = "j_joker" })
+	hand = "Two Pair", plan_primary = "Two Pair", plan_secondary = "Pair", ante = 1, round = "Boss", jokers = "j_joker" })
 Logger.write("DECISION", { decision_id = 54, action = "buy_pack", revealed = "c_earth,c_mars,c_pluto,c_unknown",
 	modeled = "c_mercury:5.0", supported = "c_earth,c_mars,c_pluto" })
 Logger.write("SHOP_DECISION", { decision_id = 43, action = "shop_decision", shop_id = "1:1",
@@ -54,6 +54,8 @@ Logger.write("PLAYER_ACTION", {
 	action = "discard", ante = 2, blind = "Big",
 	selected = "H-2-none-none-none", hand = "H-2-none-none-none;S-A-none-none-none",
 })
+Logger.write("PLAYER_ACTION", { action = "play", ante = 2, blind = "Big", poker_hand = "Flush" })
+Logger.write("PLAYER_ACTION", { action = "play", ante = 2, blind = "Boss", poker_hand = "Flush" })
 Logger.finish("loseGame", { ante = 4 })
 
 assert(path and path:match("logs/multibots%-"),
@@ -98,9 +100,11 @@ assert(files[report_path] and files[report_path]:match("MATCH QUALITY REPORT")
 	and not files[report_path]:match("c_mars:")
 	and not files[report_path]:match("c_pluto:")
 	and files[report_path]:match("Bot final build:")
+	and files[report_path]:match("Bot final build:\nMost played poker hand: Pair %(3 plays%)")
 	and files[report_path]:match("j_wee edition=none effect=rank_scaling_chips scaling=80 target_rank=2")
 	and files[report_path]:match("H%-2%-m_lucky%-none%-Red: 2")
 	and files[report_path]:match("Player final build:")
+	and files[report_path]:match("Player final build:\nMost played poker hand: Flush %(2 plays%)")
 	and files[report_path]:match("H%-K%-m_steel%-none%-Red: 2")
 	and files[report_path]:match("No crashes or invalid actions"),
 	"finishing a v2 log should automatically create a compact match report")

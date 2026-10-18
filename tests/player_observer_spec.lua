@@ -17,6 +17,9 @@ G = {
 	jokers = { cards = { { config = { center = { key = "j_joker" } } } } },
 }
 MP = { UTILS = { card_to_string = function(card) return card.encoded end } }
+get_poker_hand_info = function(cards)
+	return #cards == 1 and "High Card" or "Pair"
+end
 
 local Observer = dofile("bot/player_observer.lua")
 local logger = {
@@ -34,7 +37,8 @@ assert(funcs.play_cards_from_highlighted(event) == "played",
 assert(#logged == 1 and logged[1].kind == "PLAYER_ACTION"
 	and logged[1].values.action == "play"
 	and logged[1].values.ante == 3
-	and logged[1].values.selected == "S-A-none-none-none",
+	and logged[1].values.selected == "S-A-none-none-none"
+	and logged[1].values.poker_hand == "High Card",
 	"play observation should capture selected cards and pre-action resources")
 
 active = false
