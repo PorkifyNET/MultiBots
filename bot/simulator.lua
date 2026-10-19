@@ -999,6 +999,8 @@ local function joker_context(state, cards, hands_left, discards_left, full_hand)
 		starting_deck_size = state.starting_deck_size,
 		is_pvp = state.current_round == "PvP",
 		glass_xmult = (glass_rules(state)),
+		observatory_xmult = has_value(state.vouchers or {}, "v_observatory") and 1.5 or nil,
+		consumables = state.consumables,
 		boss_min_cards = state.boss_blind == "bl_psychic" and 5 or nil,
 		boss_halve_base = state.boss_blind == "bl_flint" or nil,
 		probability_multiplier = has_joker_kind(state, "double_probabilities") and 2 or 1,
@@ -2320,6 +2322,8 @@ local function apply_voucher(state, voucher)
 		state.joker_limit = state.joker_limit + (voucher.amount or 1)   -- Antimatter
 	elseif voucher.effect == "celestial_target" then
 		-- Presence in state.vouchers is the Telescope flag used when packs open.
+	elseif voucher.effect == "held_planet_xmult" then
+		-- Presence in state.vouchers enables held Planet XMult while scoring.
 	elseif voucher.effect == "arcana_spectral_chance" then
 		-- Presence in state.vouchers controls Arcana generation below.
 	end

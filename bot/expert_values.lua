@@ -239,7 +239,7 @@ return {
 		v_crystal_ball = 30,           -- Crystal Ball
 		v_omen_globe = 28,             -- Omen Globe
 		v_telescope = 30,              -- Telescope
-		v_observatory = 0,             -- Observatory
+		v_observatory = 34,            -- Observatory
 		v_grabber = 40,                -- Grabber
 		v_nacho_tong = 40,             -- Nacho Tong
 		v_wasteful = 30,               -- Wasteful

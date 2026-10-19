@@ -217,9 +217,9 @@ local function effect_affinity(scores, effect, shape, state)
 	elseif effect.kind == "rank_mult" or effect.kind == "rank_chips" or effect.kind == "rank_chips_mult"
 		or effect.kind == "rank_scaling_chips" or effect.kind == "face_mult" or effect.kind == "face_chips"
 		or effect.kind == "first_face_xmult" or effect.kind == "green_scaling_mult" then
-		add(scores, "High Card", 14)
-		add(scores, "Pair", 10)
-		add(scores, "Two Pair", 7)
+		-- These effects reward cards, not poker-hand shapes. Treating them as
+		-- High Card / Pair evidence can hide a demonstrated Flush or Straight
+		-- build and makes the Expert buy the wrong Planet.
 	elseif effect.kind == "card_count_mult" then
 		add(scores, "High Card", 12)
 		add(scores, "Pair", 10)
@@ -890,11 +890,18 @@ function Strategy.planet_utility(state, hand, plan)
 	if plan.exploring then return 8 + ((state.levels and state.levels[hand]) or 1) end
 	local feasibility = Strategy.hand_feasibility(state, hand, plan)
 	local base = 3 + ((state.levels and state.levels[hand]) or 1)
-	local value = base + feasibility * 14
-	if hand == plan.primary_hand then value = value + 26 * feasibility
-	elseif hand == plan.secondary_hand then value = value + 14 * feasibility
+	-- Repeatedly scoring a hand is direct evidence that another level will pay
+	-- off, even when broad card-based Joker synergies leave the plan diffuse.
+	local demonstrated = math.min(12, ((state.hand_usage and state.hand_usage[hand]) or 0) * 1.5)
+	local value = base + feasibility * 14 + demonstrated
+	-- A diffuse plan is weak evidence. Scale its alignment bonus by confidence
+	-- so deck shape and observed plays can decide between Planet choices.
+	local confidence = plan.confidence == nil and 1
+		or math.max(0, math.min(1, tonumber(plan.confidence) or 0))
+	if hand == plan.primary_hand then value = value + 26 * feasibility * confidence
+	elseif hand == plan.secondary_hand then value = value + 14 * feasibility * confidence
 	elseif (plan.hand_scores[hand] or 0) >= (plan.hand_scores[plan.primary_hand] or 0) * 0.7 then
-		value = value + 4 * feasibility
+		value = value + 4 * feasibility * confidence
 	end
 	for _, key in ipairs(state.jokers or {}) do
 		local effect = state.joker_effects and state.joker_effects[key]

@@ -880,7 +880,17 @@ local function money_consumable_gain(state, consumable)
 end
 
 local function should_use_consumable(state, consumable, source)
-	if consumable.type == "planet" then return true end
+	if consumable.type == "planet" then
+		if has_value(state.vouchers or {}, "v_observatory") then
+			local plan = state.strategy_plan or (state.Strategy and state.Strategy.analyze(state)) or {}
+			-- Observatory's held XMult is most useful for hands the build is
+			-- actually pursuing. Off-plan Planets still get used and free the slot.
+			if consumable.hand == plan.primary_hand or consumable.hand == plan.secondary_hand then
+				return false
+			end
+		end
+		return true
+	end
 	if consumable.type ~= "deck_tool" then return false end
 	if consumable.effect == "money" then
 		local gain = money_consumable_gain(state, consumable)

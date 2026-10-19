@@ -203,6 +203,7 @@ local voucher_definitions = {
 	{ key = "v_wasteful", cost = 10, effect = "discards", amount = 1 },
 	{ key = "v_hone", cost = 10, effect = "edition_rate", amount = 2 },
 	{ key = "v_telescope", cost = 10, effect = "celestial_target" },
+	{ key = "v_observatory", cost = 10, effect = "held_planet_xmult", amount = 1.5 },
 	{ key = "v_omen_globe", cost = 10, effect = "arcana_spectral_chance", chance = 0.2 },
 	{ key = "v_tarot_merchant", cost = 10, effect = "tarot_rate", amount = 2.4, runtime_only = true },
 	{ key = "v_tarot_tycoon", cost = 10, effect = "tarot_rate", amount = 8, runtime_only = true },

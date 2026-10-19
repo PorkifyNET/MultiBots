@@ -133,6 +133,14 @@ assert(#reported.jokers == 5 and #reported.vouchers == 1
 	and Content.summary(reported).skipped == 0,
 	"all six reported runtime objects should be supported instead of logged as unknown")
 
+local observatory_reported = Content.build({
+	Voucher = { { key = "v_observatory", cost = 10 } },
+}, {}, {})
+assert(#observatory_reported.vouchers == 1
+	and observatory_reported.vouchers[1].effect == "held_planet_xmult"
+	and Content.summary(observatory_reported).skipped == 0,
+	"Observatory should be recognized with its held-Planet scoring adapter")
+
 local match_reported = Content.build({
 	Joker = {
 		{ key = "j_business", cost = 4 },

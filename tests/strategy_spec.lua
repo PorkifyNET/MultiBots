@@ -348,4 +348,24 @@ assert(Strategy.joker_utility(economy_state, faceless, economy_plan) >= 14,
 assert(plan.confidence > 0 and plan.confidence < 1,
 	"confidence should be normalized strategic support rather than a saturating gap bonus")
 
+local report_state = {
+	deck = Cards.standard_deck(),
+	jokers = { "j_scary_face", "j_fibonacci", "j_photograph" },
+	joker_effects = {
+		j_scary_face = { kind = "face_chips", amount = 30 },
+		j_fibonacci = { kind = "rank_mult", amount = 8 },
+		j_photograph = { kind = "first_face_xmult", amount = 2 },
+	},
+	levels = { ["High Card"] = 1, Pair = 2, ["Two Pair"] = 1, ["Three of a Kind"] = 1,
+		Straight = 1, Flush = 1, ["Full House"] = 1, ["Four of a Kind"] = 1,
+		["Straight Flush"] = 1 },
+	hand_usage = { ["Two Pair"] = 13, ["Full House"] = 10, Flush = 9, Straight = 6,
+		Pair = 3, ["Three of a Kind"] = 3, ["High Card"] = 1, ["Straight Flush"] = 1 },
+}
+for _ = 1, 8 do report_state.deck[#report_state.deck + 1] = { rank = 12, suit = "Hearts" } end
+local report_plan = Strategy.analyze(report_state)
+assert(Strategy.planet_utility(report_state, "Flush", report_plan)
+	> Strategy.planet_utility(report_state, "Pair", report_plan),
+	"demonstrated Flush scoring and suit concentration should beat a weak Pair-plan Planet")
+
 print("strategy_spec: ok")
