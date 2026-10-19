@@ -29,4 +29,29 @@ assert(PeerPool.start({ name = "CaveBot", bot_blind_col = 2, difficulty = "exper
 assert(starts[4].decision_temperature == 0.75,
 	"the fourth Expert peer should receive the warmest bounded temperature")
 
+PeerPool.reset(false)
+local factory_peers, published = {}, {}
+PeerPool.configure(function()
+	local peer = {
+		start = function() return true end,
+		update = function() end,
+		reset = function() end,
+		is_active = function() return true end,
+	}
+	factory_peers[#factory_peers + 1] = peer
+	return peer
+end)
+PeerPool.on_change(function(_, player_ids) published[#published + 1] = player_ids end)
+MP = { LOBBY = { players = {} } }
+assert(PeerPool.start({ name = "MultiBot", difficulty = "expert" }))
+MP.LOBBY.players = { { id = "host" }, { id = "bot-1" } }
+PeerPool.update(0)
+assert(#published[#published] == 0,
+	"the roster can list a bot before that bot has read its own player ID")
+factory_peers[1].player_id = "bot-1"
+PeerPool.update(0)
+assert(published[#published][1] == "bot-1",
+	"a bot's player ID must be published once the bot learns it, without another roster change")
+MP = nil
+
 print("peer_pool_spec: ok")

@@ -82,7 +82,12 @@ function PeerPool.update(dt)
 		player_ids[#player_ids + 1] = tostring(player.id or player.player_id or player.username or "")
 	end
 	table.sort(player_ids)
-	local signature = table.concat(player_ids, "|")
+	-- A bot learns its own player ID only from its join reply, which can come
+	-- after the roster change. Republish the bot IDs once every bot knows its ID.
+	local bot_ids = {}
+	for _, peer in ipairs(PeerPool.peers) do bot_ids[#bot_ids + 1] = tostring(peer.player_id or "") end
+	table.sort(bot_ids)
+	local signature = table.concat(player_ids, "|") .. "#" .. table.concat(bot_ids, "|")
 	if signature ~= PeerPool.player_signature then
 		PeerPool.player_signature = signature
 		notify_change(true)
