@@ -16,7 +16,6 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   guard:
@@ -28,16 +27,28 @@ jobs:
     steps:
       # This privileged workflow only reads GitHub API metadata. It deliberately
       # does not check out, download, or execute code from the pull request.
+      - name: Create PorkifyBot installation token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.PORKIFYBOT_CLIENT_ID }}
+          private-key: ${{ secrets.PORKIFYBOT_PRIVATE_KEY }}
+          permission-contents: read
+          permission-pull-requests: write
+
       - name: Check repository integrity and approve
         uses: actions/github-script@v8
+        env:
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const pullNumber = context.payload.pull_request.number;
             const initialHeadSha = context.payload.pull_request.head.sha;
             const metadataOwner = 'PorkyLIVE';
+            const appLogin = `${process.env.APP_SLUG}[bot]`.toLowerCase();
 
             // Changes to repository controls always require two human reviewers.
             const protectedFiles = new Set([
@@ -253,12 +264,12 @@ jobs:
               { owner, repo, pull_number: pullNumber, per_page: 100 },
             );
             const alreadyApproved = reviews.some((review) =>
-              review.user?.login === 'github-actions[bot]' &&
+              review.user?.login?.toLowerCase() === appLogin &&
               review.state === 'APPROVED' &&
               review.commit_id === initialHeadSha
             );
             if (alreadyApproved) {
-              core.notice('github-actions[bot] already approved this commit.');
+              core.notice(`${appLogin} already approved this commit.`);
               return;
             }
 
