@@ -33,7 +33,9 @@ jobs:
         with:
           client-id: ${{ vars.PORKIFYBOT_CLIENT_ID }}
           private-key: ${{ secrets.PORKIFYBOT_PRIVATE_KEY }}
-          permission-contents: read
+          # GitHub only counts approvals from identities with repository write
+          # access. The guard never uses this capability to modify contents.
+          permission-contents: write
           permission-pull-requests: write
 
       - name: Check repository integrity and approve
@@ -49,6 +51,7 @@ jobs:
             const initialHeadSha = context.payload.pull_request.head.sha;
             const metadataOwner = 'PorkyLIVE';
             const appLogin = `${process.env.APP_SLUG}[bot]`.toLowerCase();
+            const approvalMarker = '<!-- repository-guard:write-app-v1 -->';
 
             // Changes to repository controls always require two human reviewers.
             const protectedFiles = new Set([
@@ -266,7 +269,8 @@ jobs:
             const alreadyApproved = reviews.some((review) =>
               review.user?.login?.toLowerCase() === appLogin &&
               review.state === 'APPROVED' &&
-              review.commit_id === initialHeadSha
+              review.commit_id === initialHeadSha &&
+              review.body?.includes(approvalMarker)
             );
             if (alreadyApproved) {
               core.notice(`${appLogin} already approved this commit.`);
@@ -290,5 +294,6 @@ jobs:
                 '',
                 'This approval covers repository integrity, not functional correctness.',
                 `Approved commit \`${initialHeadSha.slice(0, 12)}\`.`,
+                approvalMarker,
               ].join('\n'),
             });
