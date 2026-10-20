@@ -999,6 +999,8 @@ local function joker_context(state, cards, hands_left, discards_left, full_hand)
 		starting_deck_size = state.starting_deck_size,
 		is_pvp = state.current_round == "PvP",
 		glass_xmult = (glass_rules(state)),
+		observatory_xmult = has_value(state.vouchers or {}, "v_observatory") and 1.5 or nil,
+		consumables = state.consumables,
 		boss_min_cards = state.boss_blind == "bl_psychic" and 5 or nil,
 		boss_halve_base = state.boss_blind == "bl_flint" or nil,
 		probability_multiplier = has_joker_kind(state, "double_probabilities") and 2 or 1,
@@ -2238,6 +2240,7 @@ local function count_shop_decision(state)
 end
 
 local pack_offer
+local add_deck_card
 
 local function pack_spec(key)
 	local family, size = tostring(key):match("^p_(%a+)_(%a+)_%d+$")
@@ -2302,12 +2305,18 @@ local function apply_voucher(state, voucher)
 		state.hand_size_bonus = state.hand_size_bonus + (voucher.amount or 1)
 	elseif voucher.effect == "interest_cap" then
 		state.interest_cap = math.max(state.interest_cap or 5, voucher.amount or 10)
+	-- the Merchant / Tycoon Vouchers set the shop rate to 4 * extra
+	-- (card.lua apply_to_run), they do not multiply it: the rates here are that
+	-- extra (1 = the base rate 4), so Tycoon gives 32, not 9.6 * 8.
 	elseif voucher.effect == "planet_rate" then
-		state.planet_rate = (state.planet_rate or 1) * (voucher.amount or 2)
+		state.planet_rate = math.max(state.planet_rate or 1, voucher.amount or 2.4)
 	elseif voucher.effect == "tarot_rate" then
-		state.tarot_rate = (state.tarot_rate or 1) * (voucher.amount or 2.4)
+		state.tarot_rate = math.max(state.tarot_rate or 1, voucher.amount or 2.4)
 	elseif voucher.effect == "playing_cards_in_shop" then
+		-- Magic Trick / Illusion: playing_card_rate = 4 (card.lua apply_to_run);
+		-- Illusion's Enhancements and Editions are read from state.vouchers.
 		state.playing_cards_in_shop = true
+		state.playing_card_rate = math.max(state.playing_card_rate or 0, voucher.amount or 4)
 	elseif voucher.effect == "reroll_discount" then
 		state.reroll_discount = (state.reroll_discount or 0) + (voucher.amount or 2)
 	elseif voucher.effect == "shop_discount" then
@@ -2320,6 +2329,8 @@ local function apply_voucher(state, voucher)
 		state.joker_limit = state.joker_limit + (voucher.amount or 1)   -- Antimatter
 	elseif voucher.effect == "celestial_target" then
 		-- Presence in state.vouchers is the Telescope flag used when packs open.
+	elseif voucher.effect == "held_planet_xmult" then
+		-- Presence in state.vouchers enables held Planet XMult while scoring.
 	elseif voucher.effect == "arcana_spectral_chance" then
 		-- Presence in state.vouchers controls Arcana generation below.
 	end
@@ -2598,6 +2609,17 @@ local function replace_joker_in_place(state, index, choice)
 	})
 end
 
+-- A playing card from a Standard Pack or the shop goes into the deck
+-- (playing_card_joker_effects: Hologram).
+add_deck_card = function(state, source_card, label)
+	local card = copy_map(source_card)
+	state.Cards.refresh(card, label .. state.ante .. ":" .. state.round .. ":" .. #state.deck)
+	state.deck[#state.deck + 1] = card
+	state.cards_added = state.cards_added + 1
+	adjust_owned_jokers(state, "deck_add_scaling_xmult", 1)
+	return card
+end
+
 -- A Joker goes into a free slot (a Negative brings its own); never an
 -- automatic sale.
 install_joker = function(state, choice)
@@ -2759,11 +2781,7 @@ local function apply_pack(state, pack)
 				applied = true
 			end
 		elseif choice.type == "playing_card" and choice.card then
-			local card = copy_map(choice.card)
-			state.Cards.refresh(card, ":standard:" .. state.ante .. ":" .. state.round .. ":" .. #state.deck)
-			state.deck[#state.deck + 1] = card
-			state.cards_added = state.cards_added + 1
-			adjust_owned_jokers(state, "deck_add_scaling_xmult", 1)
+			add_deck_card(state, choice.card, ":standard:")
 			applied = true
 		end
 		if applied then picked[#picked + 1] = choice.key end
@@ -2836,7 +2854,9 @@ local vanilla_vouchers = {
 	-- Attrition (multiplayer gamemodes/attrition.lua banned_vouchers).
 }
 
-local function headless_shop_keys(state, reroll)
+-- `forced_slots`: main slots a Rare / Uncommon Tag's Joker takes this visit
+-- (create_card_for_shop returns the Tag's card instead of polling one).
+local function headless_shop_keys(state, reroll, forced_slots)
 	local stream = shop_stream(state, reroll and "arena_reroll" or "arena_visit")
 	local keys, metadata, taken = {}, {}, {}
 	local function add(key, info)
@@ -2844,16 +2864,35 @@ local function headless_shop_keys(state, reroll)
 		metadata[#keys] = info or {}
 		taken[key] = true
 	end
+	-- G.GAME rates in create_card_for_shop's order: Joker 20, Tarot 4 (Tarot
+	-- Merchant 9.6, Tycoon 32), Planet 4 (likewise), playing cards 0 (Magic
+	-- Trick / Illusion 4), Spectral 0 (Ghost Deck 2).
+	local tarot_weight = 4 * (tonumber(state.tarot_rate) or 1)
 	local planet_weight = 4 * (tonumber(state.planet_rate) or 1)
+	local playing_card_weight = tonumber(state.playing_card_rate) or 0
 	local spectral_weight = state.ghost_deck and 2 or 0
-	local total = 20 + 4 + planet_weight + spectral_weight
-	for slot = 1, state.shop_slots or 2 do
+	local total = 20 + tarot_weight + planet_weight + playing_card_weight + spectral_weight
+	local illusion = has_value(state.vouchers or {}, "v_illusion")
+	for slot = 1, math.max(0, (state.shop_slots or 2) - (forced_slots or 0)) do
 		local slot_stream = stream:fork("slot:" .. slot)
 		local roll = slot_stream:next() * total
 		if roll < 20 then
 			local key, edition = roll_vanilla_joker(state, slot_stream, taken)
 			add(key, { edition = edition })
-		elseif roll < 24 then
+		elseif roll >= 20 + tarot_weight + planet_weight
+			and roll < 20 + tarot_weight + planet_weight + playing_card_weight then
+			-- a playing card (create_card 'Base', or 'Enhanced' with Illusion's 40%,
+			-- and Illusion's 20% guaranteed Edition without Negative).
+			local card = {
+				suit = state.Cards.suits[slot_stream:integer(1, #state.Cards.suits)],
+				rank = slot_stream:integer(2, 14),
+			}
+			if illusion and slot_stream:next() > 0.6 then
+				card.enhancement = standard_enhancements[slot_stream:integer(1, #standard_enhancements)]
+			end
+			if illusion and slot_stream:next() > 0.8 then card.edition = poll_edition(slot_stream, true) end
+			add(card.enhancement or "c_base", { playing_card = card })
+		elseif roll < 20 + tarot_weight then
 			local eligible = {}
 			for _, tool in ipairs(state.deck_tools or {}) do
 				if tool.set == "Tarot" and not taken[tool.key] and consumable_available(state, tool.key) then
@@ -2861,7 +2900,7 @@ local function headless_shop_keys(state, reroll)
 				end
 			end
 			if #eligible > 0 then add(eligible[slot_stream:integer(1, #eligible)]) end
-		elseif roll < 24 + planet_weight then
+		elseif roll < 20 + tarot_weight + planet_weight then
 			local eligible = {}
 			for _, planet in ipairs(state.planet_pool or {}) do
 				if not taken[planet.key] and consumable_available(state, planet.key) then
@@ -2993,6 +3032,8 @@ local function shop_actions(state, session)
 			end
 		elseif offer.type == "voucher" then
 			if affordable and not has_value(state.vouchers, offer.key) then buy() end
+		elseif offer.type == "playing_card" then   -- Magic Trick: goes into the deck
+			if affordable then buy() end
 		elseif offer.type == "pack" then   -- bought unopened; opening it runs pack_step
 			if affordable then buy({ family = offer.family, picks = offer.picks }) end
 		end
@@ -3023,6 +3064,50 @@ local function sell_joker(state, index, extra)
 	local decision = { type = "sell_joker", key = key, value = sale, ante = state.ante, round = state.round, source = "shop" }
 	for name, field in pairs(extra or {}) do decision[name] = field end
 	record_decision(state, decision)
+end
+
+-- A Tag waiting for the next shop (D6, Coupon, Voucher Tag); true when one was held.
+local function take_shop_tag(state, tag)
+	for index, key in ipairs(state.pending_shop_tags or {}) do
+		if key == tag then
+			table.remove(state.pending_shop_tags, index)
+			return true
+		end
+	end
+	return false
+end
+
+-- The Voucher a Voucher Tag adds (get_next_voucher_key(true)), never one owned
+-- or already in the shop: under The Order from the bot's private queue
+-- (Order.generate_tag_voucher), headless an eligible vanilla Voucher as for
+-- the Ante's Voucher (base Voucher, or its upgrade once it is owned).
+local function next_tag_voucher(state, offers, ordered_keys, count)
+	local in_shop = {}
+	for _, offer in ipairs(offers or {}) do
+		if offer.type == "voucher" then in_shop[offer.key] = true end
+	end
+	for _, key in ipairs(ordered_keys or {}) do
+		if tostring(key):match("^v_") then in_shop[key] = true end
+	end
+	if state.strict_order_content then
+		local generate = state.Order and state.Order.generate_tag_voucher
+		if type(generate) ~= "function" then return nil end
+		return (generate(state, in_shop))
+	end
+	local eligible = {}
+	for _, pair in ipairs(vanilla_vouchers) do
+		local key
+		if not has_value(state.vouchers or {}, pair[1]) then
+			key = pair[1]
+		elseif not has_value(state.vouchers or {}, pair[2]) then
+			key = pair[2]
+		end
+		if key and not in_shop[key] then eligible[#eligible + 1] = key end
+	end
+	if #eligible == 0 then return nil end
+	local stream = state.rng:fork("voucher_tag:" .. tostring(state.ante) .. ":"
+		.. tostring(state.shop_visits or 0) .. ":" .. tostring(count))
+	return eligible[stream:integer(1, #eligible)]
 end
 
 local function visit_shop(state, ordered_keys)
@@ -3061,15 +3146,52 @@ local function visit_shop(state, ordered_keys)
 	-- back here, after the new cards (the shop's layout).
 	local kept_offers = reroll and state.shop_kept_offers or {}
 	state.shop_kept_offers = nil
-	if not ordered_keys and not state.legacy_shop then ordered_keys = headless_shop_keys(state, reroll) end
 	local offers, supported_keys, tag_rewards = {}, {}, {}
+	-- Tags held when the shop opens (game.lua shop creation): shop_start (D6
+	-- Tag) before the cards, store_joker_create / store_joker_modify (Rare,
+	-- Uncommon and edition Tags) for every card created, rerolls included, then
+	-- voucher_add (Voucher Tag) and shop_final_pass (Coupon Tag) on a new shop.
+	local modern_tags = state.strict_order_content or not state.legacy_shop
+	if not reroll then state.shop_d6 = take_shop_tag(state, "tag_d_six") or nil end
+	local tag_offers, edition_rewards = {}, {}
+	if modern_tags then
+		for index, reward in ipairs(state.pending_tag_jokers or {}) do
+			if reward.edition then
+				edition_rewards[#edition_rewards + 1] = reward
+			elseif not state.strict_order_content or reward.rarity then
+				-- a Rare / Uncommon Tag's free Joker takes the first card slot
+				-- (create_card_for_shop returns it instead of polling a card).
+				local offer = queued_tag_joker(state, reward, index)
+				if offer then
+					offer.couponed = true
+					tag_offers[#tag_offers + 1] = offer
+					tag_rewards[#tag_rewards + 1] = reward.tag .. ":" .. offer.key
+				end
+			end
+		end
+		state.pending_tag_jokers = {}
+	end
+	if not ordered_keys and not state.legacy_shop then ordered_keys = headless_shop_keys(state, reroll, #tag_offers) end
+	local offer_at = {}   -- ordered index -> its offer
 	if ordered_keys then
 		local occurrences = {}
 		for ordered_index, key in ipairs(ordered_keys) do
 			occurrences[key] = (occurrences[key] or 0) + 1
-			local offer = offer_for_key(state, key, occurrences[key])
+			local metadata = ordered_keys._metadata and ordered_keys._metadata[ordered_index]
+			local offer
+			if metadata and metadata.playing_card then
+				-- a playing card (Magic Trick / Illusion): base cost $1 plus its
+				-- Edition (Card:set_cost; a playing card's center has no cost).
+				local card = copy_map(metadata.playing_card)
+				offer = {
+					type = "playing_card", key = key, card = card,
+					cost = 1 + (edition_extra_cost[card.edition] or 0),
+				}
+			else
+				offer = offer_for_key(state, key, occurrences[key])
+			end
+			offer_at[ordered_index] = offer
 			if offer then
-				local metadata = ordered_keys._metadata and ordered_keys._metadata[ordered_index]
 				if offer.type == "joker" and metadata then
 					offer.edition = metadata.edition
 					offer.cost = (tonumber(offer.cost) or 0) + (edition_extra_cost[offer.edition] or 0)
@@ -3138,6 +3260,58 @@ local function visit_shop(state, ordered_keys)
 		end
 	end
 	end
+	-- the Tag Jokers are the shop's first cards.
+	for position, offer in ipairs(tag_offers) do table.insert(offers, position, offer) end
+	if modern_tags then
+		-- an edition Tag gives its edition to the next Joker created for the shop
+		-- without one and makes it free (tag.lua store_joker_modify, couponed):
+		-- the Tag Jokers first, then the main slots in order. A Joker the run
+		-- cannot simulate takes the edition too, as in the game.
+		local created = {}
+		for _, offer in ipairs(tag_offers) do created[#created + 1] = { key = offer.key, offer = offer } end
+		for ordered_index, key in ipairs(ordered_keys or {}) do
+			if not tostring(key):match("^[pv]_") then
+				local metadata = ordered_keys._metadata and ordered_keys._metadata[ordered_index]
+				created[#created + 1] = { key = key, offer = offer_at[ordered_index],
+					edition = metadata and metadata.edition }
+			end
+		end
+		for _, card in ipairs(created) do
+			if #edition_rewards == 0 then break end
+			local edition = card.edition or (card.offer and card.offer.edition)
+			if tostring(card.key):match("^j_") and not edition then
+				local reward = table.remove(edition_rewards, 1)
+				if card.offer then
+					card.offer.edition = reward.edition
+					card.offer.tag_reward = reward.tag
+					card.offer.couponed = true
+				end
+				tag_rewards[#tag_rewards + 1] = reward.tag .. ":" .. tostring(card.key)
+			end
+		end
+		state.pending_tag_jokers = edition_rewards   -- no Joker in this shop: the next one
+	end
+	-- Voucher Tag (voucher_add): every held one adds a Voucher to a new shop
+	-- (get_next_voucher_key(true), never one already in the shop).
+	local tag_voucher_keys = {}
+	if not reroll then
+		local count = 0
+		while take_shop_tag(state, "tag_voucher") do
+			count = count + 1
+			local key = next_tag_voucher(state, offers, ordered_keys, count)
+			local offer = key and offer_for_key(state, key)
+			if offer and offer.type == "voucher" then
+				offer.survives_reroll = true
+				offer.tag_reward = "tag_voucher"
+				offers[#offers + 1] = offer
+				supported_keys[#supported_keys + 1] = key
+			end
+			if key then
+				tag_voucher_keys[#tag_voucher_keys + 1] = key
+				tag_rewards[#tag_rewards + 1] = "tag_voucher:" .. key
+			end
+		end
+	end
 	-- the price before the discount, for a kept offer's repricing.
 	for _, offer in ipairs(offers) do
 		if offer.survives_reroll and not offer.list_cost then offer.list_cost = tonumber(offer.cost) or 0 end
@@ -3149,45 +3323,38 @@ local function visit_shop(state, ordered_keys)
 				* (100 - state.shop_discount) / 100))
 		end
 	end
-	local unresolved_rewards = {}
-	for index, reward in ipairs(state.pending_tag_jokers or {}) do
-		-- also in the headless shop, an edition Tag gives its
-		-- edition to the next shop Joker without one and makes it free (tag.lua
-		-- store_joker_modify) instead of adding a Joker.
-		if (state.strict_order_content or not state.legacy_shop) and reward.edition then
-			local modified
-			for _, offer in ipairs(offers) do
-				if offer.type == "joker" and not offer.edition then
-					offer.edition = reward.edition
-					offer.tag_reward = reward.tag
-					-- Every edition Tag makes the affected shop Joker free. This is
-					-- especially important for Negative: declining a free, slot-neutral
-					-- Joker can never improve the current build.
-					offer.cost = 0
-					modified = offer
-					break
+	-- Coupon Tag (shop_final_pass, once per shop): the new shop's cards and
+	-- Booster Packs are free, its Vouchers are not.
+	if not reroll and take_shop_tag(state, "tag_coupon") then
+		for _, offer in ipairs(offers) do
+			if offer.type ~= "voucher" then offer.couponed = true end
+		end
+		tag_rewards[#tag_rewards + 1] = "tag_coupon"
+	end
+	-- a couponed card costs $0 (Card:set_cost), whatever the discount.
+	for _, offer in ipairs(offers) do
+		if offer.couponed then offer.cost = 0 end
+	end
+	if not modern_tags then
+		-- legacy_shop: a Tag adds a free Joker (with an edition Tag's edition).
+		for index, reward in ipairs(state.pending_tag_jokers or {}) do
+			if not state.strict_order_content or reward.rarity then
+				local offer = queued_tag_joker(state, reward, index)
+				if offer then
+					offers[#offers + 1] = offer
+					tag_rewards[#tag_rewards + 1] = reward.tag .. ":" .. offer.key
 				end
 			end
-			if modified then
-				tag_rewards[#tag_rewards + 1] = reward.tag .. ":" .. modified.key
-			else
-				unresolved_rewards[#unresolved_rewards + 1] = reward
-			end
-		elseif not state.strict_order_content or reward.rarity then
-			local offer = queued_tag_joker(state, reward, index)
-			if offer then
-				offers[#offers + 1] = offer
-				tag_rewards[#tag_rewards + 1] = reward.tag .. ":" .. offer.key
-			end
 		end
+		state.pending_tag_jokers = {}
 	end
-	state.pending_tag_jokers = unresolved_rewards
 	if not ordered_keys then
 		for _, offer in ipairs(offers) do supported_keys[#supported_keys + 1] = offer.key end
 	end
 	local all_offered_keys = copy_array(ordered_keys or {})
-	-- the kept Boosters and Voucher are offered too.
+	-- the kept Boosters and Voucher are offered too, and a Voucher Tag's.
 	for _, offer in ipairs(kept_offers) do all_offered_keys[#all_offered_keys + 1] = offer.key end
+	for _, key in ipairs(tag_voucher_keys) do all_offered_keys[#all_offered_keys + 1] = key end
 	if #all_offered_keys == 0 then
 		for _, offer in ipairs(offers) do all_offered_keys[#all_offered_keys + 1] = offer.key end
 	end
@@ -3296,6 +3463,8 @@ local function visit_shop(state, ordered_keys)
 				choice.picked = apply_pack(state, choice)
 			elseif choice.type == "voucher" then
 				apply_voucher(state, choice)
+			elseif choice.type == "playing_card" then
+				add_deck_card(state, choice.card, ":shop:")
 			else
 				store_consumable(state, choice)
 			end
@@ -3411,15 +3580,24 @@ local function begin_round(state, target, round_name, telemetry_name)
 	use_held_consumables(state, "blind_start")
 	-- the Boss Blind of a Boss round with a target (not PvP).
 	state.boss_blind = nil
-	if round_name == "Boss" and target and telemetry_name ~= "PvP" then
+	local boss_round = round_name == "Boss" and target and telemetry_name ~= "PvP"
+	if boss_round then
 		local boss = state.next_boss_blind
 			or Simulator.pick_boss(state.rng:fork("boss:" .. tostring(state.ante)), state.ante, state.bosses_used)
 		state.next_boss_blind = nil
-		state.boss_blind = boss
 		state.bosses_used = state.bosses_used or {}
 		state.bosses_used[boss] = (state.bosses_used[boss] or 0) + 1
+		-- a Boss Tag rerolls the Boss (reroll_boss: get_new_boss again, the
+		-- first Boss stays counted as used).
+		for reroll = 1, state.pending_boss_rerolls or 0 do
+			boss = Simulator.pick_boss(state.rng:fork("boss_tag:" .. tostring(state.ante) .. ":" .. reroll),
+				state.ante, state.bosses_used)
+			state.bosses_used[boss] = (state.bosses_used[boss] or 0) + 1
+		end
+		state.boss_blind = boss
 		if boss == "bl_manacle" then state.round_hand_size = (state.round_hand_size or 0) - 1 end
 	end
+	if round_name == "Boss" then state.pending_boss_rerolls = nil end   -- this Ante's Boss only
 	-- Hook arrange_jokers (before the round's Joker effects, e.g. which Joker
 	-- Ceremonial Dagger destroys).
 	arrange_jokers(state, "blind_start")
@@ -3793,6 +3971,8 @@ function Simulator.new(options, dependencies)
 		shop_slots = 2,
 		interest_cap = 5,
 		tarot_rate = 1,
+		planet_rate = 1,
+		playing_card_rate = 0,
 		playing_cards_in_shop = false,
 		reroll_discount = 0,
 		shop_discount = 0,
@@ -3830,6 +4010,7 @@ function Simulator.new(options, dependencies)
 		opponent_skips = 0,
 		skip_plans = {},
 		pending_tag_jokers = {},
+		pending_shop_tags = {},   -- D6, Coupon and Voucher Tags for the next shop
 		pack_history = {},
 		strict_order_content = options.strict_order_content == true,
 		legacy_shop = options.legacy_shop == true,   -- see visit_shop
@@ -3882,6 +4063,9 @@ function Simulator.next_reroll_cost(state, rerolls_this_shop)
 	-- the free reroll does not raise the price
 	-- (calculate_reroll_cost(final_free), button_callbacks.lua reroll_shop).
 	local increase = free and rerolls_this_shop - 1 or rerolls_this_shop
+	-- a D6 Tag makes this shop's rerolls start at $0 (temp_reroll_cost = 0
+	-- replaces the base cost, Reroll Surplus included; calculate_reroll_cost).
+	if state.shop_d6 then return math.max(0, increase) end
 	return math.max(0, 5 + increase - (state.reroll_discount or 0))
 end
 
@@ -3911,21 +4095,124 @@ function Simulator.set_ante(state, ante)
 	notify(state, "set_ante")
 end
 
--- more Tags the headless run applies (tag.lua apply_to_run).
+-- The Tags the headless run applies (tag.lua apply_to_run), by when they act:
+--   immediate: Speed (tag_skip), Handy, Garbage, Economy, Orbital, Top-up;
+--   tag_add: Double Tag copies the next Tag gained;
+--   new_blind_choice: Boss Tag rerolls this Ante's Boss Blind; Charm, Meteor,
+--     Ethereal, Standard and Buffoon Tags open a free Booster Pack at once;
+--   round_start_bonus: Juggle; eval: Investment (after the Boss);
+--   the next shop: Rare / Uncommon (store_joker_create), Foil / Holographic /
+--     Polychrome / Negative (store_joker_modify), D6 (shop_start), Voucher
+--     (voucher_add) and Coupon (shop_final_pass).
 local immediate_tags = {
 	tag_skip = true, tag_handy = true, tag_garbage = true, tag_orbital = true,
-	tag_juggle = true, tag_top_up = true,
+	tag_juggle = true, tag_top_up = true, tag_investment = true, tag_economy = true,
+	tag_double = true, tag_boss = true, tag_d_six = true, tag_coupon = true,
+	tag_negative = true, tag_foil = true, tag_holo = true, tag_polychrome = true,
 }
+-- the Booster a pack Tag opens (Charm and Meteor pick _1 or _2 with
+-- math.random; both have the same contents).
+local tag_packs = {
+	tag_charm = "p_arcana_mega_1", tag_meteor = "p_celestial_mega_1",
+	tag_ethereal = "p_spectral_normal_1", tag_standard = "p_standard_mega_1",
+	tag_buffoon = "p_buffoon_mega_1",
+}
+local tag_editions = {
+	tag_negative = "negative", tag_foil = "foil", tag_holo = "holo", tag_polychrome = "polychrome",
+}
+local shop_tags = { tag_d_six = true, tag_coupon = true, tag_voucher = true }
 
 local function skip_reward_supported(state, tag)
-	if tag == "tag_investment" or tag == "tag_economy" or tag == "tag_negative"
-		or tag == "tag_foil" or tag == "tag_holo" or tag == "tag_polychrome" then
-		return true
-	end
 	if immediate_tags[tag] then return true end
 	if (tag == "tag_rare" or tag == "tag_uncommon")
 		and (not state.strict_order_content or order_tag_jokers(state)) then return true end
+	-- a live run opens its packs and polls its Voucher from its own Order queues.
+	if tag_packs[tag] then
+		return not state.strict_order_content
+			or (state.Order and type(state.Order.generate_pack) == "function") == true
+	end
+	if tag == "tag_voucher" then
+		return not state.strict_order_content
+			or (state.Order and type(state.Order.generate_tag_voucher) == "function") == true
+	end
 	return false
+end
+Simulator.skip_reward_supported = skip_reward_supported
+
+-- A pack Tag's free Booster, opened at once like a bought one (apply_pack and
+-- its pack_step decisions; Hallucination and Red Card see it too).
+local function open_tag_pack(state, tag, key, instance)
+	local spec = pack_spec(key)
+	if not spec then return nil end
+	local pack = {
+		type = "pack", key = key, cost = 0, family = spec.family, picks = spec.picks,
+		instance = "tag:" .. tostring(instance), tag_reward = tag,
+	}
+	if state.strict_order_content then pack.ordered_unopened = true else pack.headless_unopened = true end
+	pack.picked = apply_pack(state, pack)
+	record_decision(state, {
+		type = "open_pack", key = key, source = tag,
+		picked = table.concat(pack.picked or {}, ","),
+		revealed = pack.revealed and table.concat(pack.revealed, ",") or nil,
+		modeled = pack.modeled and table.concat(pack.modeled, ",") or nil,
+		supported = supported_pack_content(state, key),
+		ante = state.ante, round = state.current_round or state.round,
+	})
+	notify(state, "tag_pack", pack)
+	return pack
+end
+
+-- One Tag's reward (a Double Tag's copy included).
+local function apply_skip_tag(state, tag, ante, blind, copy, orbital_hand)
+	local copy_suffix = copy > 1 and (":copy" .. copy) or ""
+	if tag == "tag_investment" then
+		state.pending_investment = (state.pending_investment or 0) + 25
+	elseif tag == "tag_economy" then
+		state.money = state.money + math.min(40, math.max(0, state.money))
+	elseif tag == "tag_skip" then
+		state.money = state.money + 5 * state.skips   -- Speed Tag: $5 per skip, this one included
+	elseif tag == "tag_handy" then
+		state.money = state.money + (state.hands_played or 0)
+	elseif tag == "tag_garbage" then
+		state.money = state.money + (state.unused_discards or 0)
+	elseif tag == "tag_orbital" then
+		state.levels[orbital_hand] = (state.levels[orbital_hand] or 1) + 3
+	elseif tag == "tag_juggle" then
+		state.pending_hand_size = (state.pending_hand_size or 0) + 3   -- next round only
+	elseif tag == "tag_top_up" then
+		for index = 1, 2 do
+			if #state.jokers < state.joker_limit then
+				local key, edition = roll_vanilla_joker(state,
+					state.rng:fork("top_up:" .. ante .. ":" .. blind .. ":" .. index .. copy_suffix), nil, 1)
+				for _, joker in ipairs(state.joker_pool or {}) do
+					if joker.key == key and joker_available(state, key) then
+						state.jokers[#state.jokers + 1] = key
+						initialize_joker(state, key)
+						set_joker_edition(state, key, edition)
+						break
+					end
+				end
+			end
+		end
+	elseif tag == "tag_double" then
+		state.double_tags = (state.double_tags or 0) + 1
+	elseif tag == "tag_boss" then
+		state.pending_boss_rerolls = (state.pending_boss_rerolls or 0) + 1
+	elseif tag_packs[tag] then
+		open_tag_pack(state, tag, tag_packs[tag], blind .. copy_suffix)
+	elseif shop_tags[tag] then
+		state.pending_shop_tags = state.pending_shop_tags or {}
+		state.pending_shop_tags[#state.pending_shop_tags + 1] = tag
+	elseif (tag == "tag_rare" or tag == "tag_uncommon")
+		and (not state.strict_order_content or order_tag_jokers(state)) then
+		state.pending_tag_jokers[#state.pending_tag_jokers + 1] = {
+			tag = tag, rarity = tag == "tag_rare" and "rare" or "uncommon",
+		}
+	elseif tag_editions[tag] then
+		state.pending_tag_jokers[#state.pending_tag_jokers + 1] = {
+			tag = tag, edition = tag_editions[tag],
+		}
+	end
 end
 
 -- Hook skip_pair: which Blinds of this Ante to skip (ctx in bot/expert.lua).
@@ -3953,57 +4240,23 @@ function Simulator.plan_skips(state, mode, tags)
 				type = "skip_blind", blind = blind, key = tag, ante = ante,
 				round = blind, count = state.skips,
 			})
-			local reward_count = 1 + math.min(1, state.double_tags or 0)
-			if reward_count > 1 then state.double_tags = state.double_tags - 1 end
+			-- every held Double Tag copies the Tag gained, except another Double
+			-- Tag (add_tag's tag_add context), and is used up.
+			local reward_count = 1
+			if tag and tag ~= "tag_double" and (state.double_tags or 0) > 0 then
+				reward_count = 1 + state.double_tags
+				state.double_tags = 0
+			end
+			-- the Orbital hand is chosen with the Tag; a copy levels the same hand
+			-- (Double Tag sets G.orbital_hand).
+			local orbital_hand
+			if tag == "tag_orbital" then
+				local hands = { "High Card", "Pair", "Two Pair", "Three of a Kind", "Straight", "Flush",
+					"Full House", "Four of a Kind", "Straight Flush" }
+				orbital_hand = hands[state.rng:fork("orbital:" .. ante .. ":" .. blind):integer(1, #hands)]
+			end
 			for reward = 1, reward_count do
-				-- a Double Tag's copy rolls its own Orbital hand / Top-up Jokers.
-				local copy_suffix = reward > 1 and (":copy" .. reward) or ""
-				if tag == "tag_investment" then
-					state.pending_investment = (state.pending_investment or 0) + 25
-				elseif tag == "tag_economy" then
-					state.money = state.money + math.min(40, math.max(0, state.money))
-				elseif tag == "tag_skip" then
-					state.money = state.money + 5 * state.skips   -- Speed Tag: $5 per skip, this one included
-				elseif tag == "tag_handy" then
-					state.money = state.money + (state.hands_played or 0)
-				elseif tag == "tag_garbage" then
-					state.money = state.money + (state.unused_discards or 0)
-				elseif tag == "tag_orbital" then
-					local hands = { "High Card", "Pair", "Two Pair", "Three of a Kind", "Straight", "Flush",
-						"Full House", "Four of a Kind", "Straight Flush" }
-					local hand = hands[state.rng:fork("orbital:" .. ante .. ":" .. blind .. copy_suffix):integer(1, #hands)]
-					state.levels[hand] = (state.levels[hand] or 1) + 3
-				elseif tag == "tag_juggle" then
-					state.pending_hand_size = (state.pending_hand_size or 0) + 3   -- next round only
-				elseif tag == "tag_top_up" then
-					for index = 1, 2 do
-						if #state.jokers < state.joker_limit then
-							local key, edition = roll_vanilla_joker(state,
-								state.rng:fork("top_up:" .. ante .. ":" .. blind .. ":" .. index .. copy_suffix), nil, 1)
-							for _, joker in ipairs(state.joker_pool or {}) do
-								if joker.key == key and joker_available(state, key) then
-									state.jokers[#state.jokers + 1] = key
-									initialize_joker(state, key)
-									set_joker_edition(state, key, edition)
-									break
-								end
-							end
-						end
-					end
-				elseif (tag == "tag_rare" or tag == "tag_uncommon")
-					and (not state.strict_order_content or order_tag_jokers(state)) then
-					state.pending_tag_jokers[#state.pending_tag_jokers + 1] = {
-						tag = tag, rarity = tag == "tag_rare" and "rare" or "uncommon",
-					}
-				elseif tag == "tag_negative" or tag == "tag_foil" or tag == "tag_holo"
-					or tag == "tag_polychrome" then
-					local edition = tag == "tag_negative" and "negative"
-						or (tag == "tag_foil" and "foil")
-						or (tag == "tag_holo" and "holo") or "polychrome"
-					state.pending_tag_jokers[#state.pending_tag_jokers + 1] = {
-						tag = tag, edition = edition,
-					}
-				end
+				apply_skip_tag(state, tag, ante, blind, reward, orbital_hand)
 			end
 		end
 	end

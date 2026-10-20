@@ -826,6 +826,9 @@ local function offer_value(state, offer)
 		return deck_tool_utility(state, offer)
 	elseif offer.type == "pack" then
 		return expected_pack_utility(state, R.pack_spec(offer.key) or offer, offer.key)
+	elseif offer.type == "playing_card" and offer.card then
+		-- a shop playing card (Magic Trick): valued like a Standard Pack card.
+		return playing_card_utility(state, offer.card)
 	end
 	return prior(offer)
 end

@@ -814,6 +814,15 @@ function Evaluator.evaluate(cards, levels, jokers, context)
 		if joker == "j_mystic_summit" and ((context and context.discards_left) or 0) == 0 then state.mult = state.mult + 15 end
 	end
 	end
+	-- Observatory applies X1.5 Mult for each held Planet matching the played
+	-- poker hand (Voucher calculate context: other_consumeable).
+	if state.context.observatory_xmult then
+		for _, consumable in ipairs(state.context.consumables or {}) do
+			if consumable.type == "planet" and consumable.hand == state.name then
+				apply_xmult(state, state.context.observatory_xmult)
+			end
+		end
+	end
 	for card, enhancement in pairs(stolen or {}) do card.enhancement = enhancement or nil end
 
 	return {

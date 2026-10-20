@@ -142,4 +142,16 @@ sock_context.joker_effects.j_pareidolia = { kind = "all_faces" }
 assert(Evaluator.evaluate(low, {}, { "j_pareidolia", "j_sock_and_buskin" }, sock_context).score > low_base.score,
 	"Pareidolia should make non-face cards eligible for Sock and Buskin")
 
+local flush = {
+	card(14, "Hearts"), card(12, "Hearts"), card(9, "Hearts"),
+	card(6, "Hearts"), card(3, "Hearts"),
+}
+local flush_base = Evaluator.evaluate(flush, {}, {}, {})
+local observatory = Evaluator.evaluate(flush, {}, {}, {
+	observatory_xmult = 1.5,
+	consumables = { { type = "planet", key = "c_jupiter", hand = "Flush" } },
+})
+assert(observatory.score == math.floor(flush_base.score * 1.5),
+	"Observatory should apply X1.5 for a held Planet matching the scored hand")
+
 print("evaluator_spec: ok")
