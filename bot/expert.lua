@@ -30,6 +30,7 @@
 --                   ctx = { actions } with actions done | sell_joker k (every k).
 --                   Expert: sells the rightmost unsupported Joker (content the
 --                   simulator cannot model), else done.
+--                   A debuffed (expired Perishable) Joker is sold the same way.
 --   shop_step       One shop action per call.
 --                   ctx = { session, offers, actions, purchases, steps,
 --                   shop_rerolls, reroll_cost } with actions (fixed order)
@@ -93,6 +94,14 @@
 -- bot/simulator.lua): The Emperor / The High Priestess use their cards at
 -- once, Judgement can be used with full Joker slots, and a Tarot can be spent
 -- without targets.
+--
+-- Stake stickers (bot/simulator.lua): an owned Joker's are in
+-- state.joker_stickers[key] = { eternal } | { perishable, perish_tally } and/or
+-- rental; shop offers and Buffoon Pack contents carry eternal / perishable /
+-- rental. An Eternal Joker never has a sell_joker action (nor a "+ sell joker"
+-- compound); a Perishable Joker whose perish_tally reached 0 is debuffed
+-- (Simulator.rules.joker_debuffed) and does nothing; a Rental Joker costs $1
+-- and $3 at the end of every round. The run's rules: Simulator.rules.sticker_rules.
 
 local Expert = { hooks = {} }
 local R   -- the simulator's rules helpers (Simulator.rules), set by Expert.policy
@@ -924,9 +933,13 @@ local function weakest_joker(state)
 	for index, key in ipairs(state.jokers) do
 		-- A Negative Joker supplies its own slot. Selling it cannot create room
 		-- for a normal replacement, so it is not a capacity sacrifice candidate.
-		if not state.joker_editions or state.joker_editions[key] ~= "negative" then
+		-- An Eternal Joker cannot be sold at all; a debuffed (expired
+		-- Perishable) one does nothing and goes first.
+		if (not state.joker_editions or state.joker_editions[key] ~= "negative")
+			and R.joker_sellable(state, key) then
 			local details = with_prior(R.joker_details(state, key))
 			if state.Strategy then details.utility = state.Strategy.joker_utility(state, details, state.strategy_plan) end
+			if R.joker_debuffed(state, key) then details.utility = 0 end
 			if not weakest or details.utility < weakest.utility
 				or (details.utility == weakest.utility and key < weakest.key) then
 				weakest_index, weakest = index, details
@@ -934,6 +947,18 @@ local function weakest_joker(state)
 		end
 	end
 	return weakest_index, weakest
+end
+
+-- A Rental Joker costs $3 every round: the Expert takes one only while the
+-- money left pays a round of rent for every Rental Joker it would own.
+local function rent_covered(state, offer)
+	if not offer.rental then return true end
+	local rentals = 1
+	for _, key in ipairs(state.jokers) do
+		local stickers = state.joker_stickers and state.joker_stickers[key]
+		if stickers and stickers.rental then rentals = rentals + 1 end
+	end
+	return (tonumber(state.money) or 0) - (tonumber(offer.cost) or 0) >= 3 * rentals
 end
 
 local function worthwhile_replacement(offer, weakest)
@@ -1259,7 +1284,7 @@ local function expert_pack_action(state, ctx, choice)
 	end
 	if not content then return nil end
 	if choice.type == "joker" then
-		if not R.joker_available(state, choice.key) then return nil end
+		if not R.joker_available(state, choice.key) or not rent_covered(state, choice) then return nil end
 		if #state.jokers < state.joker_limit or choice.edition == "negative" then
 			return R.find_take(ctx.actions, content, nil)
 		end
@@ -1434,7 +1459,7 @@ local function expert_shop_choice(state, session, counts, offers)
 				and can_spend and (free_planet or (offer.utility or 0) >= 10)
 				and priority_sufficient then
 				affordable[#affordable + 1] = candidate
-			elseif offer.type == "joker" and R.joker_available(state, offer.key) then
+			elseif offer.type == "joker" and R.joker_available(state, offer.key) and rent_covered(state, offer) then
 				local slot_available = #state.jokers < state.joker_limit or offer.edition == "negative"
 				local free_negative = offer.edition == "negative" and offer.cost == 0
 				local minimum = negative_bonus_slot_open(state) and 1 or 14
@@ -1448,7 +1473,8 @@ local function expert_shop_choice(state, session, counts, offers)
 					affordable[#affordable + 1] = candidate
 				elseif enabler_ready and #state.jokers >= state.joker_limit then
 					local index, weakest = weakest_joker(state)
-					local sell_value = R.joker_sell_value(state, weakest.key)
+					-- (none when every Joker is Eternal or Negative)
+					local sell_value = weakest and R.joker_sell_value(state, weakest.key) or 0
 					-- the debt allowance after the sale (selling a
 					-- Credit Card removes it), as the shop_step compound action.
 					if worthwhile_replacement(offer, weakest)
@@ -1584,14 +1610,15 @@ function Expert.hooks.shop_step(state, ctx)
 end
 
 -- Entering a shop: sell the Jokers the simulator cannot model, rightmost first.
+-- A debuffed (expired Perishable) Joker is sold too.
 function Expert.hooks.shop_open(state, ctx)
 	local unsupported = state.content_catalog and state.content_catalog.unsupported
 		and state.content_catalog.unsupported.Joker
-	if type(unsupported) ~= "table" or #unsupported == 0 then return 1 end
 	local unsupported_keys = {}
-	for _, key in ipairs(unsupported) do unsupported_keys[key] = true end
+	for _, key in ipairs(type(unsupported) == "table" and unsupported or {}) do unsupported_keys[key] = true end
 	for index = #state.jokers, 1, -1 do
-		if unsupported_keys[state.jokers[index]] then
+		local key = state.jokers[index]
+		if unsupported_keys[key] or R.joker_debuffed(state, key) then
 			local position = R.find_action(ctx.actions, "sell_joker", index)
 			if position then return position end
 		end

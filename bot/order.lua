@@ -225,8 +225,9 @@ local function poll_center(object_type, append)
 	local pool, pool_key = get_current_pool(object_type, nil, nil, append)
 	local metadata = {}
 	-- The Order advances the Joker edition queue at the same time as the Joker
-	-- queue. Preserve the result even though the headless simulator only needs a
-	-- subset of stickers/editions today.
+	-- queue, and rolls the stake stickers (with the live game's modifiers)
+	-- first: a stickered Joker comes from its own "_sticker" queue. The
+	-- simulator applies the rolled stickers (eternal_compat / perishable_compat).
 	if object_type == "Joker" then
 		local attempts, key = 0, "UNAVAILABLE"
 		while key == "UNAVAILABLE" do
@@ -319,7 +320,9 @@ local function poll_pack_card(family)
 		or (family == "spectral" and "Spectral")
 		or "Joker"
 	local key, metadata = poll_center(object_type, order_append(object_type, true))
-	return { kind = "center", key = key, edition = metadata and metadata.edition }
+	local rolls = metadata or {}   -- a Buffoon Pack Joker's stake sticker rolls come with it
+	return { kind = "center", key = key, edition = rolls.edition,
+		eternal = rolls.eternal, perishable = rolls.perishable, rental = rolls.rental }
 end
 
 -- Uncommon / Rare Tag Joker for the bot's own run.
