@@ -172,8 +172,12 @@ local supported_hands = {
 	["Four of a Kind"] = true,
 	["Straight Flush"] = true,
 	["Five of a Kind"] = true,
+	["Flush House"] = true,
+	["Flush Five"] = true,
 }
 
+-- The secret hands' Planets are softlocked (game.lua config.softlock): the
+-- simulator offers them only once their hand has been played this run.
 local planet_definitions = {
 	{ key = "c_pluto", hand = "High Card", cost = 3 },
 	{ key = "c_mercury", hand = "Pair", cost = 3 },
@@ -184,7 +188,9 @@ local planet_definitions = {
 	{ key = "c_earth", hand = "Full House", cost = 3 },
 	{ key = "c_mars", hand = "Four of a Kind", cost = 3 },
 	{ key = "c_neptune", hand = "Straight Flush", cost = 3 },
-	{ key = "c_planet_x", hand = "Five of a Kind", cost = 3, runtime_only = true },
+	{ key = "c_planet_x", hand = "Five of a Kind", cost = 3, softlock = true },
+	{ key = "c_ceres", hand = "Flush House", cost = 3, softlock = true },
+	{ key = "c_eris", hand = "Flush Five", cost = 3, softlock = true },
 }
 
 local voucher_definitions = {
@@ -685,6 +691,7 @@ function Content.build(pools, centers, banned)
 				hand = hand,
 				cost = tonumber(center.cost) or 3,
 				name = center.name,
+				softlock = center.config.softlock or nil,
 			}
 		else
 			note_unsupported(catalog, "Planet", center)

@@ -102,6 +102,31 @@ local function bot_game_view(run, order_state)
 	}
 end
 
+-- The bot's own poker hands while its cards are polled: a secret hand's Planet
+-- (config.softlock) is in the pool only once that hand was played
+-- (get_current_pool reads G.GAME.hands[hand].played), and the Telescope reads
+-- the played counts of the visible hands. Each hand is a copy of the live one
+-- with the run's play count; a secret hand is visible once played.
+local secret_hands = { ["Five of a Kind"] = true, ["Flush House"] = true, ["Flush Five"] = true }
+local function with_bot_hands(run, callback, state)
+	local game = G.GAME
+	local live = game.hands
+	if type(live) ~= "table" then return callback(state) end
+	local hands = {}
+	for name, hand in pairs(live) do
+		local view = {}
+		for field, value in pairs(hand) do view[field] = value end
+		view.played = tonumber(run.hand_usage and run.hand_usage[name]) or 0
+		if secret_hands[name] then view.visible = view.played > 0 end
+		hands[name] = view
+	end
+	game.hands = hands
+	local ok, first, second = pcall(callback, state)
+	game.hands = live
+	if not ok then error(first, 0) end
+	return first, second
+end
+
 local function with_private_game(run, callback)
 	if not G or not G.GAME or type(pseudoseed) ~= "function"
 		or type(pseudorandom) ~= "function" then return nil, "game RNG unavailable" end
@@ -142,7 +167,7 @@ local function with_private_game(run, callback)
 	if game.modifiers then game.modifiers.extra_vouchers = state.extra_vouchers end
 	resets.ante, resets.mp_real_ante = 0, tonumber(run.ante) or 1
 	G.shop_vouchers = nil
-	local ok, first, second = pcall(callback, state)
+	local ok, first, second = pcall(with_bot_hands, run, callback, state)
 	state.first_shop_buffoon = game.first_shop_buffoon == true
 	state.voucher = game.current_round and game.current_round.voucher or state.voucher
 	game.pseudorandom = saved.random

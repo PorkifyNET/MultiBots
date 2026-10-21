@@ -34,9 +34,12 @@
 --                   ctx = { session, offers, actions, purchases, steps,
 --                   shop_rerolls, reroll_cost } with actions (fixed order)
 --                   leave | reroll | buy offer [+ sell joker j | + sell
---                   consumable k] | sell_joker j | sell_consumable k | use k.
+--                   consumable k] | buy_and_use offer (a Tarot, Planet or
+--                   Spectral used at once, slots full or not) | sell_joker j |
+--                   sell_consumable k | use k.
 --                   Every legal action is listed. Expert: its purchase loop;
---                   never rerolls here.
+--                   never rerolls here; with full consumable slots it buys and
+--                   uses a Planet instead of selling a held card.
 --   reroll_step     After a shop visit (also after a reroll): reroll again?
 --                   ctx = { report, cost, rerolls_this_shop, headless }
 --                   -> boolean. Expert: its reroll heuristic on a live Order
@@ -1422,6 +1425,12 @@ local function expert_shop_choice(state, session, counts, offers)
 				else
 					room = false
 				end
+				-- The Expert uses a bought Planet at once, so with full slots it buys
+				-- and uses it instead of selling a held card for room.
+				if offer.type == "planet" and #state.consumables >= state.consumable_limit then
+					room, replace_index, replace_card, replace_value = true, nil, nil, nil
+					candidate.buy_and_use = true
+				end
 			end
 			if replace_card and offer.cost <= state.money + replace_value
 				and (state.money + replace_value - offer.cost >= reserve) then
@@ -1574,8 +1583,9 @@ function Expert.hooks.shop_step(state, ctx)
 	local choice, affordable, reserve_before = expert_shop_choice(state, session, mine, offers)
 	local meta = { log = shop_log(state, choice, affordable, reserve_before) }
 	if not choice then return 1, meta end
+	local wanted = choice.buy_and_use and "buy_and_use" or "buy"
 	for position, action in ipairs(ctx.actions) do
-		if action.type == "buy" and action.offer_index == choice.offer_index
+		if action.type == wanted and action.offer_index == choice.offer_index
 			and action.sell_joker == choice.replace_index and action.sell_consumable == choice.replace_consumable_index then
 			return position, meta
 		end
