@@ -256,6 +256,53 @@ local function current_joker_editions()
 	return ante_state and ante_state.joker_editions or state.joker_editions or {}
 end
 
+-- the bot's stake stickers per Joker key ({ eternal, perishable, perish_tally, rental }).
+local function current_joker_stickers()
+	if Peer.run then return Peer.run.joker_stickers or {} end
+	local state = Peer.replay and Peer.replay._multibots_state or {}
+	local ante_state = state.ante_states and (state.ante_states[Peer.ante] or state.ante_states[tostring(Peer.ante)])
+	return ante_state and ante_state.joker_stickers or state.joker_stickers or {}
+end
+
+-- a logged sticker list ("eternal", "perishable3+rental"; snapshot joker_stickers).
+local function parse_stickers(text)
+	if type(text) == "table" then return text end
+	if type(text) ~= "string" then return nil end
+	local stickers = {}
+	for part in text:gmatch("[^+]+") do
+		local tally = part:match("^perishable(%d*)$")
+		if part == "eternal" or part == "rental" then
+			stickers[part] = true
+		elseif tally then
+			stickers.perishable, stickers.perish_tally = true, tonumber(tally)
+		end
+	end
+	return next(stickers) and stickers or nil
+end
+
+-- the stake stickers the lobby's run enables. The host's live run is the
+-- lobby's run (same Stake, same ruleset mutators), so its G.GAME.modifiers say
+-- it, Multiplayer's own Stakes and mutators included; without a live run of the
+-- bot's Stake the simulator falls back to the Stake number.
+local function live_sticker_rules()
+	local game = G and G.GAME
+	local modifiers = game and game.modifiers
+	if not Peer.run or type(modifiers) ~= "table" or tonumber(game.stake) ~= tonumber(Peer.run.stake) then
+		return nil
+	end
+	return {
+		eternal = modifiers.enable_eternals_in_shop == true,
+		perishable = modifiers.enable_perishables_in_shop == true,
+		rental = modifiers.enable_rentals_in_shop == true,
+		all_eternal = modifiers.all_eternal == true,
+	}
+end
+
+local function refresh_sticker_rules()
+	if Peer.run then Peer.run.sticker_rules = live_sticker_rules() or Peer.run.sticker_rules end
+end
+Peer.live_sticker_rules = live_sticker_rules
+
 local function current_deck()
 	if Peer.run then return Peer.run.deck or {} end
 	local state = Peer.replay and Peer.replay._multibots_state or {}
@@ -298,13 +345,17 @@ local function current_phase_result(phase)
 	return nil, nil
 end
 
-local function spectator_jokers(keys, editions)
+local function spectator_jokers(keys, editions, stickers)
 	local jokers = {}
 	for index, key in ipairs(keys or {}) do
+		-- stake stickers as the spectator board takes them (eternal / perishable / rental)
+		local own = parse_stickers(stickers and stickers[key])
+			or (Peer.run and Peer.run.joker_stickers and Peer.run.joker_stickers[key]) or {}
 		jokers[#jokers + 1] = {
 			key = key,
 			edition = (editions and editions[key])
 				or (Peer.run and Peer.run.joker_editions and Peer.run.joker_editions[key]),
+			eternal = own.eternal or nil, perishable = own.perishable or nil, rental = own.rental or nil,
 			sort_id = index,
 		}
 	end
@@ -525,6 +576,7 @@ local function stream_hand_decision(decision)
 	local snapshot = decision.snapshot
 	local joker_keys = split_csv(snapshot_field(snapshot, "jokers"))
 	local joker_editions = snapshot_map(snapshot_field(snapshot, "joker_editions"))
+	local joker_stickers = snapshot_map(snapshot_field(snapshot, "joker_stickers"))
 	local levels = {}
 	for hand, level in pairs(snapshot_map(snapshot_field(snapshot, "levels"))) do
 		levels[hand] = { level = tonumber(level) or 1 }
@@ -537,7 +589,7 @@ local function stream_hand_decision(decision)
 		hands_left = tonumber(decision.hands_remaining),
 		discards_left = tonumber(decision.discards_remaining),
 		dollars = tonumber(decision.money),
-		jokers = spectator_jokers(joker_keys, joker_editions),
+		jokers = spectator_jokers(joker_keys, joker_editions, joker_stickers),
 		hands = levels,
 		shop_cards = {},
 	}
@@ -612,6 +664,7 @@ end
 local function joker_payload()
 	if not CardArea or not G.P_CENTERS or not MP.UTILS.str_pack_and_encode then return "" end
 	local jokers, joker_editions = current_jokers(), current_joker_editions()
+	local joker_stickers = current_joker_stickers()
 	local capacity = math.max(5, #jokers)
 	local area = CardArea(0, 0, capacity * G.CARD_W, G.CARD_H, {
 		card_limit = capacity, type = "joker", highlight_limit = 1, fixed_limit = true,
@@ -623,6 +676,17 @@ local function joker_payload()
 			})
 			local edition = joker_editions[key]
 			if edition and card.set_edition then card:set_edition({ [edition] = true }, true, true) end
+			-- its stake stickers as the game stores them (Card:set_eternal /
+			-- set_perishable / set_rental), a 0 tally debuffed
+			local stickers = joker_stickers[key]
+			if stickers and card.ability then
+				card.ability.eternal = stickers.eternal or nil
+				card.ability.perishable = stickers.perishable or nil
+				card.ability.perish_tally = stickers.perishable and stickers.perish_tally or nil
+				card.ability.rental = stickers.rental or nil
+				if stickers.perishable and (tonumber(stickers.perish_tally) or 1) <= 0 then card.debuff = true end
+				if stickers.rental and card.set_cost then card:set_cost() end
+			end
 			card.added_to_deck = false
 			area:emplace(card)
 		end
@@ -667,6 +731,14 @@ local function bot_joker_details()
 	for _, key in ipairs(current_jokers()) do
 		local effect = Peer.run and Peer.run.joker_effects and Peer.run.joker_effects[key] or {}
 		local parts = { key, "edition=" .. tostring(editions[key] or "none") }
+		local stickers = current_joker_stickers()[key]
+		if stickers and stickers.eternal then parts[#parts + 1] = "eternal" end
+		if stickers and stickers.perishable then
+			parts[#parts + 1] = "perish_tally=" .. tostring(stickers.perish_tally)
+			-- a debuffed Joker's effect is set aside while it is owned
+			if (tonumber(stickers.perish_tally) or 1) <= 0 then parts[#parts + 1] = "debuffed" end
+		end
+		if stickers and stickers.rental then parts[#parts + 1] = "rental" end
 		if effect.kind then parts[#parts + 1] = "effect=" .. tostring(effect.kind) end
 		local scaling = Peer.run and Peer.run.joker_state and detail_value(Peer.run.joker_state[key])
 		if scaling then parts[#parts + 1] = "scaling=" .. scaling end
@@ -702,9 +774,14 @@ end
 
 local function final_bot_snapshot()
 	local jokers, editions = {}, current_joker_editions()
+	local all_stickers = current_joker_stickers()
 	for _, key in ipairs(current_jokers()) do
 		local edition = editions[key]
+		local stickers = all_stickers[key] or {}
 		jokers[#jokers + 1] = key .. (edition and ("@" .. edition) or "")
+			.. (stickers.eternal and "+eternal" or "")
+			.. (stickers.perishable and ("+perishable" .. tostring(stickers.perish_tally or "")) or "")
+			.. (stickers.rental and "+rental" or "")
 	end
 	return {
 		jokers = joined_or_none(jokers, ","),
@@ -948,6 +1025,7 @@ end
 local function visit_current_shop(next_round_is_pvp)
 	if not Peer.run then return true end
 	Peer.run.next_round_is_pvp = next_round_is_pvp == true
+	refresh_sticker_rules()
 	if Peer.run.the_order then
 		local keys, generation_error
 		if Peer.dependencies.Order.generate_shop then
@@ -1736,6 +1814,7 @@ local function begin_ante(ante)
 	Peer.ante = ante
 	Peer.phase, Peer.elapsed, Peer.ready_sent, Peer.timer_sent = 1, 0, false, false
 	Peer.next_ante_delay = nil
+	refresh_sticker_rules()
 	if Peer.run then Peer.dependencies.Simulator.set_ante(Peer.run, ante) end
 	local first_new_decision = Peer.run and (#Peer.run.decisions + 1) or 1
 	local behavior = Peer.pending and Peer.pending.behavior or {}

@@ -48,6 +48,19 @@ The Expert's built-in base value of every card is in `bot/expert_values.lua`.
 Expert's value of a card is its base value times value / 50, so 50 changes
 nothing and 100 doubles it. The simulator never reads either file.
 
+## Stake stickers
+
+The simulator applies the run's stake stickers. Black Stake and above put
+Eternal Jokers in shops and Buffoon Packs, Orange Stake Perishable, Gold Stake
+Rental (30% each; never Eternal and Perishable together; some Jokers cannot be
+Eternal or Perishable). A live bot reads the lobby run's modifiers, so
+Multiplayer's own Stakes and mutators (for example "No Takebacks") count too.
+An Eternal Joker cannot be sold or destroyed; a Perishable Joker is debuffed
+after 5 rounds and then does nothing; a Rental Joker costs $1 and $3 at the end
+of every round. Policies see them in `state.joker_stickers[key]` and on shop
+offers and pack cards (`eternal`, `perishable`, `rental`); logs and snapshots
+list them next to Joker editions.
+
 ## Decision logging
 
 Each match creates `logs/multibots-<timestamp>.log` with the header

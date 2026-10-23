@@ -665,7 +665,10 @@ function Content.build(pools, centers, banned)
 	for _, definition in ipairs(joker_definitions) do
 		local center = lookup.Joker and lookup.Joker[definition.key]
 		if center and not catalog.banned[definition.key] then
-			catalog.jokers[#catalog.jokers + 1] = actual_offer(definition, center)
+			local joker = actual_offer(definition, center)
+			-- the center's stake sticker compatibility (Card:set_eternal / set_perishable)
+			joker.eternal_compat, joker.perishable_compat = center.eternal_compat, center.perishable_compat
+			catalog.jokers[#catalog.jokers + 1] = joker
 			supported[definition.key] = true
 		end
 	end

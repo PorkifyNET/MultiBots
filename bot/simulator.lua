@@ -245,6 +245,9 @@ local function joker_sell_value(state, key)
 	end
 	local extra = edition_extra_cost[(state.joker_editions or {})[key]] or 0
 	local cost = math.max(1, math.floor((base + extra + 0.5) * (100 - (state.shop_discount or 0)) / 100))
+	-- a Rental Joker's cost is $1 (Card:set_cost), so it sells for $1.
+	local stickers = state.joker_stickers and state.joker_stickers[key]
+	if stickers and stickers.rental then cost = 1 end
 	-- Card.sell_cost = max(1, floor(cost / 2)) + ability.extra_value: Gift Card
 	-- raises every Joker's extra value (sell_value_bonus, upstream), Egg only its
 	-- own (joker_extra_value; card.lua calculate_joker end_of_round).
@@ -695,6 +698,188 @@ local function joker_details(state, key)
 	return { key = key, cost = 2 }
 end
 
+---------------------------------------------------------------------------
+-- Stake stickers: Eternal, Perishable, Rental.
+-- Black Stake and above enable Eternal Jokers in the shop, Orange Stake
+-- Perishable, Gold Stake Rental (game.lua start_run; the SMODS stakes;
+-- Multiplayer's own stakes and its "sticker_shop" / "all_eternal" mutators set
+-- the same G.GAME.modifiers). A shop or Buffoon Pack Joker rolls once for
+-- Eternal (> 0.7) or else Perishable (0.4 .. 0.7) and once for Rental (> 0.7)
+-- (common_events.lua create_card). Card:set_eternal / set_perishable (card.lua)
+-- give nothing to a Joker whose center is not eternal_compat /
+-- perishable_compat and never give one Joker both. Jokers made anywhere else
+-- (Judgement, Wraith, The Soul, Riff-raff, Tags) get no sticker, except that
+-- all_eternal makes every created Joker Eternal (create_card).
+-- An owned Joker's stickers: state.joker_stickers[key] =
+-- { eternal = true } | { perishable = true, perish_tally = rounds left } and/or
+-- rental = true.
+---------------------------------------------------------------------------
+
+-- game.lua P_CENTERS: the vanilla Jokers with eternal_compat / perishable_compat
+-- false (every other vanilla Joker allows both). A catalog entry's own
+-- eternal_compat / perishable_compat (Content.build, from the live centers)
+-- takes precedence.
+local not_eternal_compat = {
+	j_gros_michel = true, j_ice_cream = true, j_cavendish = true, j_luchador = true,
+	j_turtle_bean = true, j_diet_cola = true, j_popcorn = true, j_ramen = true,
+	j_selzer = true, j_mr_bones = true, j_invisible = true,
+}
+local not_perishable_compat = {
+	j_ceremonial = true, j_ride_the_bus = true, j_runner = true, j_constellation = true,
+	j_green_joker = true, j_red_card = true, j_madness = true, j_square = true,
+	j_vampire = true, j_hologram = true, j_rocket = true, j_obelisk = true,
+	j_lucky_cat = true, j_flash = true, j_trousers = true, j_castle = true,
+	j_glass = true, j_wee = true,
+}
+-- G.GAME.perishable_rounds and G.GAME.rental_rate (game.lua init_game_object).
+local PERISHABLE_ROUNDS, RENTAL_RATE = 5, 3
+
+-- the stickers a vanilla Stake enables (game.lua start_run: stake >= 4 / 7 / 8).
+function Simulator.sticker_rules(stake)
+	stake = tonumber(stake) or 1
+	return { eternal = stake >= 4, perishable = stake >= 7, rental = stake >= 8 }
+end
+
+-- the run's sticker rules: state.sticker_rules (options.sticker_rules, or the
+-- live game's modifiers set by peer.lua) or the Stake's.
+-- { eternal, perishable, rental, all_eternal }.
+local function sticker_rules(state)
+	return state.sticker_rules or Simulator.sticker_rules(state.stake)
+end
+
+local function sticker_compatible(state, key, sticker)
+	local compat = joker_details(state, key)[sticker .. "_compat"]
+	if compat ~= nil then return compat ~= false end
+	if sticker == "eternal" then return not not_eternal_compat[key] end
+	return not not_perishable_compat[key]
+end
+
+-- the stickers Joker `key` keeps of the rolled ones (`rolled`: eternal,
+-- perishable, rental flags) after set_eternal, set_perishable and set_rental,
+-- in that order. Returns a new table, or nil for none.
+local function joker_stickers_from(state, key, rolled)
+	if type(rolled) ~= "table" then return nil end
+	local stickers = {}
+	if rolled.eternal and sticker_compatible(state, key, "eternal") then stickers.eternal = true end
+	if rolled.perishable and not stickers.eternal and sticker_compatible(state, key, "perishable") then
+		stickers.perishable = true
+	end
+	if rolled.rental then stickers.rental = true end
+	return next(stickers) and stickers or nil
+end
+
+-- the sticker rolls of a shop or Buffoon Pack Joker in a headless run (a live
+-- game's Order rolls them with the Joker, see bot/order.lua).
+local function roll_joker_stickers(state, stream)
+	local rules = sticker_rules(state)
+	if not (rules.eternal or rules.perishable or rules.rental) then return nil end
+	local poll, rolled = stream:next(), {}
+	if rules.eternal and poll > 0.7 then
+		rolled.eternal = true
+	elseif rules.perishable and poll > 0.4 and poll <= 0.7 then
+		rolled.perishable = true
+	end
+	if rules.rental and stream:next() > 0.7 then rolled.rental = true end
+	return rolled
+end
+
+-- puts its stickers on an offered Joker (offer.eternal / perishable / rental):
+-- the live game's rolls (`rolls`, an Order shop card's info) or rolled from
+-- `stream`. A Rental Joker costs $1 (Card:set_cost; no discount lowers $1, a
+-- Tag can still make it free).
+local function apply_offer_stickers(state, offer, rolls, stream)
+	local from_game = state.strict_order_content or (type(rolls) == "table"
+		and (rolls.eternal ~= nil or rolls.perishable ~= nil or rolls.rental ~= nil))
+	local rolled = from_game and rolls or roll_joker_stickers(state, stream)
+	local stickers = joker_stickers_from(state, offer.key, rolled) or {}
+	offer.eternal, offer.perishable, offer.rental = stickers.eternal, stickers.perishable, stickers.rental
+	if offer.rental then offer.cost = 1 end
+end
+
+-- a Joker joins the run with the stickers of `source` (the offer or pack card
+-- it came from; nil for a Joker made otherwise). A Perishable Joker starts
+-- with perish_tally = 5.
+local function set_joker_stickers(state, key, source)
+	local rolled = {}
+	if type(source) == "table" then
+		rolled.eternal, rolled.perishable, rolled.rental = source.eternal, source.perishable, source.rental
+	end
+	if sticker_rules(state).all_eternal then rolled.eternal = true end
+	local stickers = joker_stickers_from(state, key, rolled)
+	if stickers and stickers.perishable then stickers.perish_tally = PERISHABLE_ROUNDS end
+	state.joker_stickers = state.joker_stickers or {}
+	state.joker_stickers[key] = stickers
+end
+
+local function joker_eternal(state, key)
+	local stickers = state.joker_stickers and state.joker_stickers[key]
+	return stickers ~= nil and stickers.eternal == true
+end
+
+-- an Eternal Joker cannot be sold (Card:can_sell_card) or destroyed (Ceremonial
+-- Dagger, Madness, Hex and Ankh skip it).
+local function joker_sellable(state, key)
+	return not joker_eternal(state, key)
+end
+
+-- a Perishable Joker is debuffed for good once its tally reaches 0.
+local function joker_debuffed(state, key)
+	local stickers = state.joker_stickers and state.joker_stickers[key]
+	return stickers ~= nil and stickers.perishable == true and (tonumber(stickers.perish_tally) or 1) <= 0
+end
+
+-- a debuffed Joker does nothing (Card:calculate_joker returns nil; set_debuff
+-- runs remove_from_deck, so Credit Card, Juggler, Chaos the Clown... stop too;
+-- Card:get_edition gives no Foil / Holo / Polychrome). Its effect is taken out
+-- of state.joker_effects while it is owned and put back when it leaves; it keeps
+-- its slot (a Negative's included), sell value and stickers.
+local function debuff_joker(state, key)
+	state.suspended_joker_effects = state.suspended_joker_effects or {}
+	if state.suspended_joker_effects[key] == nil then
+		state.suspended_joker_effects[key] = state.joker_effects[key] or false
+	end
+	state.joker_effects[key] = nil
+end
+
+local function clear_joker_stickers(state, key)
+	local suspended = state.suspended_joker_effects and state.suspended_joker_effects[key]
+	if suspended ~= nil then
+		state.joker_effects[key] = suspended or nil
+		state.suspended_joker_effects[key] = nil
+	end
+	if state.joker_stickers then state.joker_stickers[key] = nil end
+end
+
+-- the Joker editions that score: none of a debuffed Joker.
+local function scoring_joker_editions(state)
+	local editions = state.joker_editions
+	if not state.suspended_joker_effects or not next(state.suspended_joker_effects) then return editions end
+	local out = {}
+	for key, edition in pairs(editions or {}) do
+		if not joker_debuffed(state, key) then out[key] = edition end
+	end
+	return out
+end
+
+-- a copy of state.joker_stickers (snapshots, exports).
+local function copy_joker_stickers(state)
+	local out = {}
+	for key, stickers in pairs(state.joker_stickers or {}) do out[key] = copy_map(stickers) end
+	return out
+end
+
+-- "eternal", "perishable3+rental"...: one Joker's stickers in the logs.
+local function stickers_string(stickers)
+	if type(stickers) ~= "table" then return nil end
+	local parts = {}
+	if stickers.eternal then parts[#parts + 1] = "eternal" end
+	if stickers.perishable then
+		parts[#parts + 1] = "perishable" .. tostring(stickers.perish_tally or PERISHABLE_ROUNDS)
+	end
+	if stickers.rental then parts[#parts + 1] = "rental" end
+	return #parts > 0 and table.concat(parts, "+") or nil
+end
+
 
 local function set_joker_edition(state, key, edition)
 	if not edition then return end
@@ -711,6 +896,7 @@ local function clear_joker(state, key)
 	if state.joker_targets then state.joker_targets[key] = nil end
 	if state.joker_extra_value then state.joker_extra_value[key] = nil end
 	if state.joker_counters then state.joker_counters[key] = nil end   -- group C jokers (Yorick)
+	clear_joker_stickers(state, key)
 end
 
 
@@ -747,6 +933,7 @@ end
 local function compact_snapshot(state, extra)
 	extra = extra or {}
 	local joker_state, joker_editions, levels = {}, {}, {}
+	local joker_stickers = {}
 	for _, key in ipairs(state.jokers or {}) do
 		if state.joker_state and state.joker_state[key] ~= nil then
 			joker_state[#joker_state + 1] = key .. ":" .. tostring(state.joker_state[key])
@@ -754,6 +941,8 @@ local function compact_snapshot(state, extra)
 		if state.joker_editions and state.joker_editions[key] then
 			joker_editions[#joker_editions + 1] = key .. ":" .. tostring(state.joker_editions[key])
 		end
+		local stickers = stickers_string(state.joker_stickers and state.joker_stickers[key])
+		if stickers then joker_stickers[#joker_stickers + 1] = key .. ":" .. stickers end
 	end
 	for _, hand in ipairs(planet_names) do
 		levels[#levels + 1] = hand .. ":" .. tostring(state.levels and state.levels[hand] or 1)
@@ -775,6 +964,7 @@ local function compact_snapshot(state, extra)
 		"jokers:" .. table.concat(state.jokers or {}, ","),
 		"joker_state:" .. (#joker_state > 0 and table.concat(joker_state, ",") or "none"),
 		"joker_editions:" .. (#joker_editions > 0 and table.concat(joker_editions, ",") or "none"),
+		"joker_stickers:" .. (#joker_stickers > 0 and table.concat(joker_stickers, ",") or "none"),
 		"levels:" .. table.concat(levels, ","),
 		"consumables:" .. (function()
 			local held = {}
@@ -995,7 +1185,7 @@ local function joker_context(state, cards, hands_left, discards_left, full_hand)
 		joker_rarities = rarities,
 		joker_sell_values = sell_values,
 		joker_limit = state.joker_limit,
-		joker_editions = state.joker_editions,
+		joker_editions = scoring_joker_editions(state), joker_stickers = state.joker_stickers,
 		starting_deck_size = state.starting_deck_size,
 		is_pvp = state.current_round == "PvP",
 		glass_xmult = (glass_rules(state)),
@@ -1216,7 +1406,7 @@ local function offer_boss_disable(state)
 	local slot
 	for index, key in ipairs(state.jokers) do
 		local effect = state.joker_effects[key]
-		if effect and effect.kind == "sell_disable_boss" then slot = index; break end
+		if effect and effect.kind == "sell_disable_boss" and joker_sellable(state, key) then slot = index; break end
 	end
 	if not slot then return end
 	local key = state.jokers[slot]
@@ -1632,7 +1822,8 @@ local function prepare_round_jokers(state, round_name)
 	while index <= #state.jokers do
 		local key = state.jokers[index]
 		local effect = state.joker_effects[key]
-		if effect and effect.kind == "sacrifice_scaling_mult" and state.jokers[index + 1] then
+		if effect and effect.kind == "sacrifice_scaling_mult" and state.jokers[index + 1]
+			and joker_sellable(state, state.jokers[index + 1]) then   -- not an Eternal Joker
 			local victim = state.jokers[index + 1]
 			local sell = joker_sell_value(state, victim)
 			state.joker_state[key] = (state.joker_state[key] or 0) + sell * (effect.amount or 2)
@@ -1644,7 +1835,11 @@ local function prepare_round_jokers(state, round_name)
 			and (round_name == "Small" or round_name == "Big") then
 			state.joker_state[key] = (state.joker_state[key] or effect.initial or 1) + (effect.amount or 0.5)
 			local victims = {}
-			for candidate = 1, #state.jokers do if candidate ~= index then victims[#victims + 1] = candidate end end
+			for candidate = 1, #state.jokers do
+				if candidate ~= index and joker_sellable(state, state.jokers[candidate]) then   -- not Eternal
+					victims[#victims + 1] = candidate
+				end
+			end
 			if #victims > 0 then
 				local stream = state.rng:fork("madness:" .. state.ante .. ":" .. state.round)
 				local victim_index = victims[stream:integer(1, #victims)]
@@ -1767,6 +1962,7 @@ local function prepare_round_jokers(state, round_name)
 		state.jokers[#state.jokers + 1] = choice.key
 		initialize_joker(state, choice.key)
 		set_joker_edition(state, choice.key, edition)
+		set_joker_stickers(state, choice.key)
 		record_decision(state, {
 			type = "create_joker", key = choice.key, source = "j_riff_raff",
 			ante = state.ante, round = state.current_round or state.round,
@@ -1989,11 +2185,12 @@ local function remember_consumable(state, consumable)
 end
 
 -- Ankh and Hex destroy every Joker but the one in slot `keep` (card.lua
--- use_consumeable: start_dissolve, not a sale). Returns the kept key.
+-- use_consumeable: start_dissolve, not a sale) and the Eternal ones. Returns
+-- the kept key.
 local function destroy_jokers_except(state, keep, source)
 	local kept = state.jokers[keep]
 	for index = #state.jokers, 1, -1 do
-		if index ~= keep then
+		if index ~= keep and joker_sellable(state, state.jokers[index]) then
 			local key = table.remove(state.jokers, index)
 			-- a duplicate of the kept Joker shares its per-key state
 			if key ~= kept then clear_joker(state, key) end
@@ -2410,6 +2607,7 @@ local function pack_candidates(state, key, spec, instance)
 				if joker.key == key and not state.banned[key] and joker_available(state, key) then
 					local entry = copy_map(joker)
 					entry.edition = edition
+					apply_offer_stickers(state, entry, nil, stream:fork("buffoon_stickers:" .. index))
 					raw[#raw + 1] = entry
 					break
 				end
@@ -2482,6 +2680,7 @@ local function pack_candidates(state, key, spec, instance)
 		elseif spec.family == "buffoon" then
 			candidates[#candidates + 1] = {
 				type = "joker", key = item.key, cost = 0, edition = item.edition,
+				eternal = item.eternal, perishable = item.perishable, rental = item.rental,
 			}
 		elseif spec.family == "standard" then
 			candidates[#candidates + 1] = item
@@ -2525,6 +2724,9 @@ local function ordered_pack_candidates(state, descriptors)
 						candidate = {
 							type = "joker", key = key, cost = 0, edition = descriptor.edition,
 						}
+						local stickers = joker_stickers_from(state, key, descriptor) or {}
+						candidate.eternal, candidate.perishable, candidate.rental =
+							stickers.eternal, stickers.perishable, stickers.rental
 						break
 					end
 				end
@@ -2592,6 +2794,7 @@ local function replace_joker_in_place(state, index, choice)
 	state.jokers[index] = choice.key
 	initialize_joker(state, choice.key)
 	set_joker_edition(state, choice.key, choice.edition)
+	set_joker_stickers(state, choice.key, choice)
 	record_decision(state, {
 		type = "sell_joker", key = key, value = sell_value,
 		ante = state.ante, round = state.round, source = "buffoon_pack",
@@ -2606,6 +2809,7 @@ install_joker = function(state, choice)
 		state.jokers[#state.jokers + 1] = choice.key
 		initialize_joker(state, choice.key)
 		set_joker_edition(state, choice.key, choice.edition)
+		set_joker_stickers(state, choice.key, choice)
 		return true
 	end
 	return false
@@ -2625,7 +2829,7 @@ local function pack_actions(state, contents, taken)
 						actions[#actions + 1] = take
 					else
 						for slot, key in ipairs(state.jokers) do
-							if state.joker_editions[key] ~= "negative" then
+							if state.joker_editions[key] ~= "negative" and joker_sellable(state, key) then
 								compounds[#compounds + 1] = {
 									type = "take", index = index, key = item.key,
 									sell_joker = slot, sell_key = key, sell_value = joker_sell_value(state, key),
@@ -2791,6 +2995,9 @@ local function shop_items_string(items)
 			tostring(item.key or "unknown"), tostring(item.type or "unknown"), tostring(item.cost or ""),
 			tostring(item.edition or "none"),
 		}, "~")
+		-- a Joker's stickers, only when it has any (key~type~cost~edition~stickers)
+		local stickers = item.type == "joker" and stickers_string(item)
+		if stickers then out[#out] = out[#out] .. "~" .. stickers end
 	end
 	return #out > 0 and table.concat(out, ";") or "none"
 end
@@ -2972,7 +3179,7 @@ local function shop_actions(state, session)
 						-- the game sells first, then buys: the sale
 						-- value counts and a sold Credit Card no longer allows debt
 						-- (card.lua remove_from_deck :656, button_callbacks.lua can_buy :56).
-						if state.joker_editions[key] ~= "negative"
+						if state.joker_editions[key] ~= "negative" and joker_sellable(state, key)
 							and (cost == 0 or cost <= state.money + joker_values[slot] + debt_limit(state, slot)) then
 							buy({ sell_joker = slot, sell_key = key, sell_value = joker_values[slot] })
 						end
@@ -2998,7 +3205,9 @@ local function shop_actions(state, session)
 		end
 	end
 	for slot, key in ipairs(state.jokers) do
-		actions[#actions + 1] = { type = "sell_joker", index = slot, key = key, value = joker_values[slot] }
+		if joker_sellable(state, key) then
+			actions[#actions + 1] = { type = "sell_joker", index = slot, key = key, value = joker_values[slot] }
+		end
 	end
 	for index, consumable in ipairs(state.consumables) do
 		actions[#actions + 1] = { type = "sell_consumable", index = index, key = consumable.key,
@@ -3037,8 +3246,10 @@ local function visit_shop(state, ordered_keys)
 	for _ = 1, #state.jokers + 1 do
 		local ctx = { actions = { { type = "done" } } }
 		for slot, key in ipairs(state.jokers) do
-			ctx.actions[#ctx.actions + 1] = { type = "sell_joker", index = slot, key = key,
-				value = joker_sell_value(state, key), unsupported = unsupported_keys[key] or nil }
+			if joker_sellable(state, key) then
+				ctx.actions[#ctx.actions + 1] = { type = "sell_joker", index = slot, key = key,
+					value = joker_sell_value(state, key), unsupported = unsupported_keys[key] or nil }
+			end
 		end
 		local index = decide(state, "shop_open", ctx, 1)
 		local action = ctx.actions[index]
@@ -3073,6 +3284,12 @@ local function visit_shop(state, ordered_keys)
 				if offer.type == "joker" and metadata then
 					offer.edition = metadata.edition
 					offer.cost = (tonumber(offer.cost) or 0) + (edition_extra_cost[offer.edition] or 0)
+				end
+				if offer.type == "joker" then
+					apply_offer_stickers(state, offer, metadata, state.rng:fork(table.concat({
+						"shop_stickers", tostring(state.ante), tostring(state.round),
+						tostring(state.shop_visits or 0), tostring(state.shop_rerolls or 0), tostring(ordered_index),
+					}, ":")))
 				end
 				-- Boosters and the Voucher are not main slots.
 				if offer.type == "pack" or offer.type == "voucher" then offer.survives_reroll = true end
@@ -3272,6 +3489,7 @@ local function visit_shop(state, ordered_keys)
 				state.jokers[choice.replace_index] = choice.key
 				initialize_joker(state, choice.key)
 				set_joker_edition(state, choice.key, choice.edition)
+				set_joker_stickers(state, choice.key, choice)
 			end
 			if choice.replace_consumable_index then
 				local sold = table.remove(state.consumables, choice.replace_consumable_index)
@@ -3289,6 +3507,7 @@ local function visit_shop(state, ordered_keys)
 					state.jokers[#state.jokers + 1] = choice.key
 					initialize_joker(state, choice.key)
 					set_joker_edition(state, choice.key, choice.edition)
+					set_joker_stickers(state, choice.key, choice)
 				end
 			elseif choice.type == "planet" then
 				store_consumable(state, choice)
@@ -3481,6 +3700,33 @@ local function expire_end_of_round_food(state)
 	end
 end
 
+-- end_round (state_events.lua), after each Joker's end-of-round effect: a
+-- Rental Joker costs $3, even below $0 (Card:calculate_rental, ease_dollars),
+-- and a Perishable Joker counts one round down; at 0 it is debuffed for good
+-- (Card:calculate_perishable, set_debuff). Both happen in every round, won,
+-- lost or PvP, before cash out counts interest.
+local function stake_sticker_round_end(state)
+	local counted = {}
+	for _, key in ipairs(state.jokers) do
+		local stickers = state.joker_stickers and state.joker_stickers[key]
+		if stickers and stickers.rental then
+			state.money = state.money - RENTAL_RATE
+			record_decision(state, { type = "pay_rental", key = key, value = RENTAL_RATE,
+				ante = state.ante, round = state.current_round or state.round })
+		end
+		-- copies of one Joker (Ankh, Invisible Joker) share its tally
+		if stickers and stickers.perishable and not counted[key] and (tonumber(stickers.perish_tally) or 0) > 0 then
+			counted[key] = true
+			stickers.perish_tally = stickers.perish_tally - 1
+			if stickers.perish_tally <= 0 then
+				debuff_joker(state, key)
+				record_decision(state, { type = "debuff_joker", key = key, reason = "perishable",
+					ante = state.ante, round = state.current_round or state.round })
+			end
+		end
+	end
+end
+
 local function finish_round(session)
 	if session.finished then return session.result end
 	local state = session.state
@@ -3531,6 +3777,7 @@ local function finish_round(session)
 		end
 	end
 	local saved = end_of_round_jokers(state, session)   -- group B jokers
+	stake_sticker_round_end(state)
 	state.rounds_completed = state.rounds_completed + 1
 	session.finished = true
 	session.result = {
@@ -3785,6 +4032,8 @@ function Simulator.new(options, dependencies)
 		joker_state = {},
 		joker_targets = {},
 		joker_editions = {},
+		joker_stickers = {},
+		sticker_rules = options.sticker_rules,   -- nil: the Stake's (Simulator.sticker_rules)
 		joker_limit = tonumber(options.joker_limit) or 5,
 		consumable_limit = tonumber(options.consumable_limit) or 2,
 		hands_per_round = tonumber(options.hands_per_round) or 4,
@@ -4238,6 +4487,7 @@ function Simulator.snapshot(state)
 		money = state.money,
 		jokers = copy_array(state.jokers),
 		joker_editions = copy_map(state.joker_editions),
+		joker_stickers = copy_joker_stickers(state),
 		levels = copy_map(state.levels),
 		deck = copy_deck(state),
 		consumables = consumables,
@@ -4252,6 +4502,7 @@ function Simulator.export(state, ante_states)
 		money = state.money,
 		jokers = copy_array(state.jokers),
 		joker_editions = copy_map(state.joker_editions),
+		joker_stickers = copy_joker_stickers(state),
 		levels = copy_map(state.levels),
 		decisions = state.decisions,
 		ante_states = ante_states or {},
@@ -4308,6 +4559,9 @@ Simulator.rules = {
 	inferred_rarity = inferred_rarity,
 	vanilla_jokers_by_rarity = vanilla_jokers_by_rarity,
 	current_hand_size = current_hand_size,
+	sticker_rules = sticker_rules,   -- stake stickers (see Simulator.sticker_rules)
+	joker_sellable = joker_sellable,
+	joker_debuffed = joker_debuffed,
 }
 
 return Simulator
