@@ -61,6 +61,9 @@ function Order.begin_run(run, seed)
 		first_shop_buffoon = false,
 		voucher = nil,
 		main_slots = (G.GAME.shop and tonumber(G.GAME.shop.joker_max)) or 2,
+		-- the run's own shop slots when the queues start: the bot's later
+		-- Overstock Vouchers add to the host's starting slots.
+		run_shop_slots = tonumber(run.shop_slots) or 2,
 		booster_slots = (G.GAME.starting_params and tonumber(G.GAME.starting_params.boosters_in_shop) or 2)
 			+ ((G.GAME.modifiers and tonumber(G.GAME.modifiers.extra_boosters)) or 0),
 		extra_vouchers = (G.GAME.modifiers and tonumber(G.GAME.modifiers.extra_vouchers)) or 0,
@@ -124,6 +127,18 @@ local function with_private_game(run, callback)
 		saved.rates[rate] = game[rate .. "_rate"]
 		game[rate .. "_rate"] = state.rates[rate]
 	end
+	-- the bot's own Vouchers set its shop rates (card.lua apply_to_run): Tarot /
+	-- Planet Merchant and Tycoon 4 * extra (run.tarot_rate / planet_rate hold
+	-- that extra), Magic Trick and Illusion playing_card_rate = 4.
+	local voucher_rates = {
+		tarot = tonumber(run.tarot_rate) and run.tarot_rate > 1 and 4 * run.tarot_rate or nil,
+		planet = tonumber(run.planet_rate) and run.planet_rate > 1 and 4 * run.planet_rate or nil,
+		playing_card = tonumber(run.playing_card_rate) and run.playing_card_rate > 0 and run.playing_card_rate or nil,
+	}
+	for rate, value in pairs(voucher_rates) do
+		if saved.rates[rate] == nil then saved.rates[rate] = game[rate .. "_rate"] or false end
+		game[rate .. "_rate"] = value
+	end
 	game.pseudorandom = state.random
 	game.used_jokers = used_jokers
 	game.used_vouchers = used_vouchers
@@ -152,7 +167,7 @@ local function with_private_game(run, callback)
 	game.edition_rate = saved.edition_rate
 	SMODS.showman = saved.showman
 	if game.modifiers then game.modifiers.extra_vouchers = saved.extra_vouchers end
-	for rate, value in pairs(saved.rates) do game[rate .. "_rate"] = value end
+	for rate, value in pairs(saved.rates) do game[rate .. "_rate"] = value or nil end
 	resets.ante, resets.mp_real_ante = saved.ante, saved.mp_real_ante
 	if not ok then return nil, first end
 	return first, second
@@ -319,6 +334,12 @@ local function poll_pack_card(family)
 		or (family == "arcana" and "Tarot")
 		or (family == "spectral" and "Spectral")
 		or "Joker"
+	-- Omen Globe: an Arcana Pack card is a Spectral card 20% of the time
+	-- (SMODS Arcana create_card: pseudorandom('omen_globe') > 0.8).
+	if family == "arcana" and G.GAME.used_vouchers and G.GAME.used_vouchers.v_omen_globe
+		and pseudorandom("omen_globe") > 0.8 then
+		object_type = "Spectral"
+	end
 	local key, metadata = poll_center(object_type, order_append(object_type, true))
 	local rolls = metadata or {}   -- a Buffoon Pack Joker's stake sticker rolls come with it
 	return { kind = "center", key = key, edition = rolls.edition,
@@ -345,6 +366,22 @@ function Order.generate_tag_joker(run, rarity)
 			and edition_name(poll_edition("edi" .. tostring(rarity_value) .. "0")) or nil
 		reserve_generated_center(key)
 		return { kind = "center", key = key, edition = edition }
+	end)
+end
+
+-- The Voucher a Voucher Tag adds to the bot's shop (get_next_voucher_key(true):
+-- the "Voucher_fromtag" queue, never a Voucher in `in_shop` or owned).
+function Order.generate_tag_voucher(run, in_shop)
+	if type(get_next_voucher_key) ~= "function" then return nil, "unsupported tag" end
+	return with_private_game(run, function()
+		G.ARGS = G.ARGS or {}
+		local saved = G.ARGS.voucher_tag
+		G.ARGS.voucher_tag = {}
+		for key, value in pairs(in_shop or {}) do G.ARGS.voucher_tag[key] = value end
+		local ok, key = pcall(get_next_voucher_key, true)
+		G.ARGS.voucher_tag = saved
+		if not ok or key == "UNAVAILABLE" then return nil end
+		return key
 	end)
 end
 
@@ -427,6 +464,37 @@ local function append_packs(keys, state)
 	end
 end
 
+-- A playing card in the bot's shop (Magic Trick / Illusion): create_card's
+-- random front and Illusion's 20% Edition (create_card_for_shop:
+-- pseudorandom('illusion') > 0.8, poll_edition('illusion', nil, true, true)).
+local function shop_playing_card(key)
+	local suit = picked_object(SMODS.Suits, "frontsho0")
+	local rank = picked_object(SMODS.Ranks, "frontsho0")
+	local edition
+	if G.GAME.used_vouchers and G.GAME.used_vouchers.v_illusion
+		and pseudorandom(pseudoseed("illusion")) > 0.8 and type(poll_edition) == "function" then
+		edition = edition_name(poll_edition("illusion", nil, true, true))
+	end
+	return {
+		suit = suit and (suit.key or suit.name),
+		rank = rank and (tonumber(rank.id) or tonumber(rank.nominal)),
+		enhancement = key ~= "c_base" and key or nil,
+		edition = edition,
+	}
+end
+
+-- The main shop slots of the bot's run: the host's starting slots plus the
+-- bot's Overstock Vouchers, less the slots its Rare / Uncommon Tag Jokers take
+-- (create_card_for_shop returns the Tag's card instead of polling one).
+local function main_slots(run, state)
+	local slots = (tonumber(state.main_slots) or 2)
+		+ math.max(0, (tonumber(run.shop_slots) or 2) - (tonumber(state.run_shop_slots) or 2))
+	for _, reward in ipairs(run.pending_tag_jokers or {}) do
+		if reward.rarity then slots = slots - 1 end
+	end
+	return math.max(0, slots)
+end
+
 -- Generate a shop from the bot's private Order queues. `main_only` is the
 -- reroll operation: it consumes fresh main-shop cards without moving the pack
 -- or voucher queues. A skipped Blind simply never calls this function.
@@ -435,13 +503,17 @@ function Order.generate_shop(run, options)
 	return with_private_game(run, function(state)
 		ensure_voucher(run, state)
 		local keys, metadata = {}, {}
-		local slots = tonumber(options.slots) or tonumber(state.main_slots) or 2
+		local slots = tonumber(options.slots) or main_slots(run, state)
 		for _ = 1, slots do
 			local key, info = poll_shop_card()
 			if key then
 				keys[#keys + 1] = key
 				metadata[#keys] = info or {}
-				reserve_generated_center(key)
+				if key == "c_base" or tostring(key):match("^m_") then
+					metadata[#keys].playing_card = shop_playing_card(key)
+				else
+					reserve_generated_center(key)
+				end
 			end
 		end
 		if not options.main_only then

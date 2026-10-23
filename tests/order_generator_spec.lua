@@ -166,5 +166,68 @@ assert(G.GAME.current_round.voucher[1] == "v_grabber",
 assert(G.GAME.current_round.idol_card == nil,
 	"private Idol resets must not modify or leak state into the human round")
 
+-- The bot's own Vouchers set its private shop rates (card.lua apply_to_run).
+local observed_rates = {}
+local pool_ref = get_current_pool
+get_current_pool = function(...)
+	observed_rates[#observed_rates + 1] = { tarot = G.GAME.tarot_rate, planet = G.GAME.planet_rate }
+	return pool_ref(...)
+end
+local merchant_run = { seed = "MERCHANT", ante = 1, jokers = {},
+	vouchers = { "v_tarot_merchant", "v_tarot_tycoon", "v_planet_merchant" }, tarot_rate = 8, planet_rate = 2.4 }
+Order.begin_run(merchant_run, merchant_run.seed)
+assert(Order.generate_reroll(merchant_run))
+get_current_pool = pool_ref
+assert(observed_rates[1].tarot == 32 and math.abs(observed_rates[1].planet - 9.6) < 1e-9,
+	"Tarot Tycoon and Planet Merchant set the bot's private rates to 32 and 9.6")
+assert(G.GAME.tarot_rate == 0 and G.GAME.planet_rate == 0, "the human's shop rates are restored")
+
+-- Overstock adds a slot to the bot's shop; a Rare Tag's Joker takes one.
+local overstock_run = { seed = "OVERSTOCK", ante = 1, jokers = {}, vouchers = {}, shop_slots = 2 }
+Order.begin_run(overstock_run, overstock_run.seed)
+overstock_run.shop_slots = 3
+assert(#Order.generate_reroll(overstock_run) == 3, "the bot's Overstock adds a card slot")
+overstock_run.pending_tag_jokers = { { tag = "tag_rare", rarity = "rare" } }
+assert(#Order.generate_reroll(overstock_run) == 2, "a Rare Tag's Joker takes one of the card slots")
+
+-- Magic Trick: playing cards in the bot's shop, with their fronts.
+local joker_rate = G.GAME.joker_rate
+G.GAME.joker_rate = 0
+local trick_run = { seed = "TRICK", ante = 1, jokers = {}, vouchers = { "v_magic_trick" }, playing_card_rate = 4 }
+Order.begin_run(trick_run, trick_run.seed)
+G.GAME.joker_rate = joker_rate
+local trick = assert(Order.generate_reroll(trick_run))
+local front = trick._metadata[1].playing_card
+assert(trick[1] == "c_base" and front and front.suit and front.rank and not front.enhancement,
+	"Magic Trick puts playing cards with a front in the bot's shop")
+assert(G.GAME.playing_card_rate == 0, "the human's playing card rate is restored")
+
+-- Omen Globe: Spectral cards in the bot's Arcana Packs.
+local omen_run = { seed = "OMEN", ante = 1, jokers = {}, vouchers = { "v_omen_globe" } }
+Order.begin_run(omen_run, omen_run.seed)
+local pseudorandom_ref = pseudorandom
+pseudorandom = function(seed)
+	if seed == "omen_globe" then return 0.9 end
+	return pseudorandom_ref(seed)
+end
+local omen = assert(Order.generate_pack(omen_run, "p_arcana_normal_1"))
+pseudorandom = pseudorandom_ref
+local spectral_keys = { c_immolate = true, c_cryptid = true, c_aura = true }
+for _, card in ipairs(omen) do
+	assert(spectral_keys[card.key], "an Omen Globe roll above 0.8 makes an Arcana card Spectral: " .. tostring(card.key))
+end
+
+-- Voucher Tag: the bot's own Voucher_fromtag poll, never a Voucher in its shop.
+function get_next_voucher_key(from_tag)
+	assert(from_tag, "a Voucher Tag polls get_next_voucher_key(true)")
+	for _, key in ipairs({ "v_grabber", "v_hone" }) do
+		if not (G.ARGS.voucher_tag or {})[key] and not G.GAME.used_vouchers[key] then return key end
+	end
+	return "UNAVAILABLE"
+end
+assert(Order.generate_tag_voucher({ seed = "TAGV", ante = 1, jokers = {}, vouchers = {} }, { v_grabber = true })
+	== "v_hone" and G.ARGS.voucher_tag == nil, "the Voucher Tag skips the shop's Voucher")
+get_next_voucher_key = nil
+
 G, SMODS = nil, nil
 print("order_generator_spec: ok")

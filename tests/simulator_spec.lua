@@ -1071,9 +1071,9 @@ assert(modules.Simulator.record_pvp_outcome(skipper, 1500, 900),
 assert(not modules.Simulator.record_pvp_outcome(skipper, 1000, 900),
 	"a narrow PvP result should not enable pressure skipping")
 skipper.skip_plans[2] = nil
-local unsupported_tag_plan = modules.Simulator.plan_skips(skipper, "reactive", { Small = "tag_meteor" })
+local unsupported_tag_plan = modules.Simulator.plan_skips(skipper, "reactive", { Small = "tag_mp_gambling_sandbox" })
 assert(not unsupported_tag_plan.Small,
-	"Reactive simulation must not skip for a Meteor reward it cannot apply")
+	"Reactive simulation must not skip for a modded Tag reward it cannot apply")
 
 local pressure_skipper = modules.Simulator.new({ seed = "PRESSURE-SKIPPER", difficulty = "expert" }, modules)
 modules.Simulator.set_ante(pressure_skipper, 4)
@@ -1082,7 +1082,7 @@ pressure_skipper.jokers = { "j_joker", "j_jolly", "j_sly", "j_half", "j_abstract
 pressure_skipper.previous_pvp_dominant = true
 pressure_skipper.Policy = setmetatable({ should_skip_blind = function() return true end }, { __index = pressure_skipper.Policy })
 local pressure_plan = modules.Simulator.plan_skips(pressure_skipper, "reactive", {
-	Small = "tag_meteor", Big = "tag_economy",
+	Small = "tag_mp_gambling_sandbox", Big = "tag_economy",
 })
 assert(not pressure_plan.Small and pressure_plan.Big and pressure_skipper.skips == 1,
 	"Reactive pressure must choose the supported reward instead of chaining both Blind skips")

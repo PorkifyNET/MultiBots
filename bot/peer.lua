@@ -882,7 +882,7 @@ local function build_replay(message)
 	}, Peer.dependencies.Expert.modules(Peer.dependencies))
 	Peer.dependencies.Order.clear()
 	-- A new game: the host's tag queue is read again at the bot's first Ante.
-	Peer.blind_tag_seed, Peer.blind_tags_trusted = nil, nil
+	Peer.blind_tag_seed, Peer.blind_tags_trusted, Peer.blind_tags_checked = nil, nil, nil
 	if Peer.dependencies.Order.begin_run then
 		local order_state = Peer.dependencies.Order.begin_run(Peer.run, order_seed)
 		if not order_state then
@@ -1778,31 +1778,62 @@ end
 -- tags belong to the host's current Ante, and the bot keeps its own pace, so a
 -- bot that reaches Ante N first used to see the host's Ante N-1 tags. The tags
 -- of any Ante are replayed from the host's seed (Order.blind_tags); the replay
--- is trusted only after it matched the host's real tags on a shared Ante, and
--- any later mismatch goes back to the host's tags for the rest of the game.
+-- is trusted once it matched the host's real tags of an Ante, and a mismatch
+-- stops it for the rest of the game.
+--
+-- The Ante the host's tags belong to is not always round_resets.ante: the game
+-- raises the Ante as soon as the Boss is beaten (end_round: ease_ante) but
+-- draws the next Ante's tags only at cash out (G.FUNCS.cash_out, which sets
+-- round_resets.blind_ante at the same time). In between the host shows the new
+-- Ante with the previous Ante's tags; comparing those with the new Ante's
+-- replay once made the bot distrust a correct replay and then skip for stale
+-- tags for the rest of the game.
+local function live_tags_ante(resets)
+	local blind_ante = tonumber(resets.blind_ante)
+	if blind_ante then return blind_ante end
+	local ante = tonumber(resets.mp_real_ante or resets.ante)
+	if ante and resets.blind_states and resets.blind_states.Boss == "Defeated" then return ante - 1 end
+	return ante
+end
+
 local function blind_tags_for_ante(ante, live_tags)
 	local Order = Peer.dependencies and Peer.dependencies.Order
 	local resets = G and G.GAME and G.GAME.round_resets
-	if not (Order and Order.blind_tags and resets) or Peer.blind_tags_trusted == false then return live_tags end
-	local random = G.GAME.pseudorandom
-	if not Peer.blind_tag_seed and random and random.seed then
-		Peer.blind_tag_seed = { seed = random.seed, hashed_seed = random.hashed_seed }
-	end
-	local replayed = Peer.blind_tag_seed and Order.blind_tags(Peer.blind_tag_seed, ante)
-	if not replayed then return live_tags end
-	local live_ante = tonumber(resets.mp_real_ante or resets.ante)
-	if live_tags and live_ante == tonumber(ante) then
-		if replayed.Small == live_tags.Small and replayed.Big == live_tags.Big then
-			Peer.blind_tags_trusted = true
-		else
-			Peer.blind_tags_trusted = false
-			sendWarnMessage(string.format("BLIND_TAGS replay %s/%s differs from the host's %s/%s at Ante %s; "
-				.. "using the host's tags", tostring(replayed.Small), tostring(replayed.Big),
-				tostring(live_tags.Small), tostring(live_tags.Big), tostring(ante)), "MULTIBOTS")
+	if not resets then return live_tags end
+	ante = tonumber(ante)
+	local live_ante = live_tags and live_tags_ante(resets)
+	local live_current = live_tags ~= nil and live_ante == ante
+	local can_replay = Order and Order.blind_tags and Peer.blind_tags_trusted ~= false
+	if can_replay then
+		local random = G.GAME.pseudorandom
+		if not Peer.blind_tag_seed and random and random.seed then
+			Peer.blind_tag_seed = { seed = random.seed, hashed_seed = random.hashed_seed }
 		end
-		return live_tags
+		can_replay = Peer.blind_tag_seed ~= nil
 	end
-	if Peer.blind_tags_trusted then return replayed end
+	-- check the replay against the host's tags of the Ante they belong to.
+	if can_replay and live_ante and live_ante >= 1 and Peer.blind_tags_checked ~= live_ante then
+		local check = Order.blind_tags(Peer.blind_tag_seed, live_ante)
+		if check then
+			Peer.blind_tags_checked = live_ante
+			if check.Small == live_tags.Small and check.Big == live_tags.Big then
+				Peer.blind_tags_trusted = true
+			else
+				Peer.blind_tags_trusted, can_replay = false, false
+				sendWarnMessage(string.format("BLIND_TAGS replay %s/%s differs from the host's %s/%s at Ante %s; "
+					.. "using the host's tags of its own Ante only", tostring(check.Small), tostring(check.Big),
+					tostring(live_tags.Small), tostring(live_tags.Big), tostring(live_ante)), "MULTIBOTS")
+			end
+		end
+	end
+	if live_current then return live_tags end
+	if can_replay and Peer.blind_tags_trusted then
+		local replayed = Order.blind_tags(Peer.blind_tag_seed, ante)
+		if replayed then return replayed end
+	end
+	-- the host's tags are another Ante's: skipping for them would be skipping
+	-- for the wrong reward.
+	if live_ante and ante and live_ante ~= ante then return nil end
 	return live_tags
 end
 Peer.blind_tags_for_ante = blind_tags_for_ante
@@ -2063,7 +2094,7 @@ function Peer.reset(leave_lobby)
 	Peer.player_lives_by_id, Peer.pvp_scores_by_id, Peer.last_pvp_scores_by_id = {}, {}, {}
 	Peer.human_players_seen = false
 	Peer.bot_skips, Peer.skips_since_pvp = 0, 0
-	Peer.blind_tag_seed, Peer.blind_tags_trusted = nil, nil
+	Peer.blind_tag_seed, Peer.blind_tags_trusted, Peer.blind_tags_checked = nil, nil, nil
 	Peer.timer_enabled, Peer.ante_timer_seconds, Peer.pvp_start_ante = nil, nil, nil
 	Peer.player_id, Peer.nemesis_id, Peer.endgame_requester = nil, nil, nil
 	Peer.lobby_players = nil

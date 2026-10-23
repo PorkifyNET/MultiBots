@@ -194,8 +194,10 @@ local voucher_definitions = {
 	{ key = "v_overstock_plus", cost = 10, effect = "shop_slots", amount = 1 },
 	{ key = "v_paint_brush", cost = 10, effect = "hand_size", amount = 1 },
 	{ key = "v_seed_money", cost = 10, effect = "interest_cap", amount = 10 },
-	-- Planet rate 4 -> 9.6 (game.lua config extra = 9.6/4).
+	-- Planet rate 4 -> 9.6, Tycoon 32 (game.lua config extra = 9.6/4, 32/4;
+	-- card.lua apply_to_run sets planet_rate = 4 * extra).
 	{ key = "v_planet_merchant", cost = 10, effect = "planet_rate", amount = 9.6 / 4 },
+	{ key = "v_planet_tycoon", cost = 10, effect = "planet_rate", amount = 32 / 4 },
 	{ key = "v_reroll_surplus", cost = 10, effect = "reroll_discount", amount = 2 },
 	{ key = "v_reroll_glut", cost = 10, effect = "reroll_discount", amount = 2 },   -- offered by the simulator (upgrade Voucher)
 	{ key = "v_clearance_sale", cost = 10, effect = "shop_discount", amount = 25 },
@@ -203,10 +205,15 @@ local voucher_definitions = {
 	{ key = "v_wasteful", cost = 10, effect = "discards", amount = 1 },
 	{ key = "v_hone", cost = 10, effect = "edition_rate", amount = 2 },
 	{ key = "v_telescope", cost = 10, effect = "celestial_target" },
+	{ key = "v_observatory", cost = 10, effect = "held_planet_xmult", amount = 1.5 },
 	{ key = "v_omen_globe", cost = 10, effect = "arcana_spectral_chance", chance = 0.2 },
-	{ key = "v_tarot_merchant", cost = 10, effect = "tarot_rate", amount = 2.4, runtime_only = true },
-	{ key = "v_tarot_tycoon", cost = 10, effect = "tarot_rate", amount = 8, runtime_only = true },
-	{ key = "v_magic_trick", cost = 10, effect = "playing_cards_in_shop", amount = 1, runtime_only = true },
+	-- Tarot rate 4 -> 9.6 / 32 like the Planet Vouchers; Magic Trick and Illusion
+	-- set playing_card_rate = 4 (game.lua config extra = 4), Illusion also lets
+	-- shop cards be Enhanced or have an Edition (create_card_for_shop).
+	{ key = "v_tarot_merchant", cost = 10, effect = "tarot_rate", amount = 9.6 / 4 },
+	{ key = "v_tarot_tycoon", cost = 10, effect = "tarot_rate", amount = 32 / 4 },
+	{ key = "v_magic_trick", cost = 10, effect = "playing_cards_in_shop", amount = 4 },
+	{ key = "v_illusion", cost = 10, effect = "playing_cards_in_shop", amount = 4 },
 	-- Money Tree and Reroll Glut are offered by the
 	-- simulator's shop too (upgrade Vouchers, see below), so not runtime_only.
 	{ key = "v_money_tree", cost = 10, effect = "interest_cap", amount = 20 },
