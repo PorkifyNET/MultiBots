@@ -80,6 +80,22 @@ local planet_names = {
 	"Five of a Kind",
 }
 
+-- The secret poker hands (hidden until played). Their Planets (Planet X, Ceres,
+-- Eris: config.softlock) are in the Planet pool only once that hand has been
+-- played this run (common_events.lua get_current_pool: softlock and
+-- G.GAME.hands[hand].played > 0), in shops, Celestial Packs and The High
+-- Priestess alike.
+local secret_hands = { ["Five of a Kind"] = true, ["Flush House"] = true, ["Flush Five"] = true }
+local function planet_unlocked(state, planet)
+	if not (planet.softlock or secret_hands[planet.hand]) then return true end
+	return ((state.hand_usage or {})[planet.hand] or 0) > 0
+end
+-- Every poker hand, strongest first (game.lua G.handlist).
+local hand_list = {
+	"Flush Five", "Flush House", "Five of a Kind", "Straight Flush", "Four of a Kind", "Full House",
+	"Flush", "Straight", "Three of a Kind", "Two Pair", "Pair", "High Card",
+}
+
 local enhancements = { "m_bonus", "m_mult", "m_lucky", "m_glass", "m_steel", "m_gold", "m_wild" }
 local standard_enhancements = { "m_bonus", "m_mult", "m_lucky", "m_glass", "m_steel", "m_gold", "m_wild", "m_stone" }
 local editions = { "foil", "holo", "polychrome" }
@@ -2244,7 +2260,10 @@ apply_consumable = function(state, consumable, source)
 				end
 			end
 		elseif consumable.effect == "generate_planet" then
-			local eligible = copy_array(state.planet_pool or {})
+			local eligible = {}
+			for _, planet in ipairs(state.planet_pool or {}) do
+				if planet_unlocked(state, planet) then eligible[#eligible + 1] = planet end
+			end
 			local room = math.max(0, (state.consumable_limit or 2) - #(state.consumables or {}))
 			for _ = 1, math.min(consumable.count or 2, #eligible, room) do
 				local picked = table.remove(eligible, stream:integer(1, #eligible))
@@ -2341,6 +2360,40 @@ local function consumable_usable(state, consumable)
 		return #state.jokers < state.joker_limit or compat(state).judgement_without_slot == true
 	end
 	return true
+end
+
+-- Buy and Use (G.FUNCS.can_buy_and_use): a Tarot, Planet or Spectral offer can
+-- be bought and used at once when it is affordable and Card:can_use_consumeable
+-- allows it in the shop. The card never enters the consumable slots, so they
+-- may be full. No card is in hand in the shop, so a card that targets hand
+-- cards cannot be used there (Aura, Cryptid, the enhancement, suit and seal
+-- cards, Familiar, Sigil, Ouija...).
+local function buy_and_use_ready(state, offer)
+	if offer.type == "planet" then return true end
+	if offer.type ~= "deck_tool" then return false end
+	local effect = offer.effect
+	if effect == "money" or effect == "level_all_hands" or effect == "pvp_attack" then
+		return true   -- The Hermit, Temperance, Black Hole, Asteroid
+	end
+	if effect == "edition" then   -- The Wheel of Fortune: a Joker without an edition
+		return offer.key == "c_wheel_of_fortune" and #editionless_joker_slots(state) > 0
+	end
+	local room = #state.consumables < state.consumable_limit
+	if effect == "generate_tarot" or effect == "generate_planet" then return room end   -- Emperor, High Priestess
+	if effect == "repeat_consumable" then return room and state.last_consumable ~= nil end   -- The Fool
+	if effect == "generate_joker" then return #state.jokers < state.joker_limit end   -- Judgement, Wraith, The Soul
+	if effect == "duplicate_joker" or effect == "polychrome_joker" or effect == "negative_joker" then
+		return spectral_usable(state, offer) == true   -- Ankh, Hex, Ectoplasm
+	end
+	return false
+end
+
+-- A Buy and Use purchase: the bought card is used at once, after it is paid
+-- (button_callbacks.lua buy_from_shop, id 'buy_and_use': G.FUNCS.use_card).
+local function use_bought_consumable(state, choice)
+	local card = copy_map(choice)
+	card.offer_index, card.use_now = nil, nil
+	return apply_consumable(state, card, "buy_and_use")
 end
 
 -- Actions of a consumable step: done, use k (usable, k ascending), sell k.
@@ -2573,12 +2626,14 @@ local function random_standard_card(state, stream, index)
 	}
 end
 
--- Telescope: the Planet of the most played hand (none before a hand is played).
+-- Telescope: the Planet of the most played hand (none before a hand is played),
+-- secret hands included once played; a tie goes to the stronger hand
+-- (G.handlist order, Celestial Pack create_card).
 local function telescope_planet(state)
 	if not has_value(state.vouchers or {}, "v_telescope") then return nil end
 	local preferred
 	local best_count = 0
-	for _, hand in ipairs(planet_names) do
+	for _, hand in ipairs(hand_list) do
 		local count = (state.hand_usage and state.hand_usage[hand]) or 0
 		if count > best_count then preferred, best_count = hand, count end
 	end
@@ -2604,7 +2659,9 @@ local function pack_candidates(state, key, spec, instance)
 	if spec.family == "celestial" then
 		local eligible = {}
 		for _, planet in ipairs(state.planet_pool) do
-			if consumable_available(state, planet.key) then eligible[#eligible + 1] = planet end
+			if consumable_available(state, planet.key) and planet_unlocked(state, planet) then
+				eligible[#eligible + 1] = planet
+			end
 		end
 		raw = guarantee_telescope_planet(state, sample_unique(eligible, spec.choices, stream), spec.choices)
 	elseif spec.family == "buffoon" then
@@ -3110,7 +3167,8 @@ local function headless_shop_keys(state, reroll, forced_slots)
 		elseif roll < 20 + tarot_weight + planet_weight then
 			local eligible = {}
 			for _, planet in ipairs(state.planet_pool or {}) do
-				if not taken[planet.key] and consumable_available(state, planet.key) then
+				if not taken[planet.key] and consumable_available(state, planet.key)
+					and planet_unlocked(state, planet) then
 					eligible[#eligible + 1] = planet.key
 				end
 			end
@@ -3182,7 +3240,8 @@ local function refresh_offer_costs(state, offers)
 end
 
 -- The legal shop actions in a fixed order: leave, reroll, per offer (buy, buy +
--- sell joker j, buy + sell consumable k), sell joker j, sell consumable k, use k.
+-- sell joker j, buy + sell consumable k, buy_and_use), sell joker j, sell
+-- consumable k, use k.
 -- Every legal action is listed.
 local function shop_actions(state, session)
 	local offers = session.offers
@@ -3236,6 +3295,11 @@ local function shop_actions(state, session)
 						end
 					end
 				end
+			end
+			-- Buy and Use, with or without a free consumable slot.
+			if affordable and buy_and_use_ready(state, offer) then
+				actions[#actions + 1] = { type = "buy_and_use", offer_index = offer_index, offer = offer,
+					key = offer.key, item_type = offer.type, cost = cost }
 			end
 		elseif offer.type == "voucher" then
 			if affordable and not has_value(state.vouchers, offer.key) then buy() end
@@ -3448,7 +3512,9 @@ local function visit_shop(state, ordered_keys)
 		elseif roll < planet_cutoff and #state.planet_pool > 0 then
 			local eligible = {}
 			for _, planet in ipairs(state.planet_pool) do
-				if consumable_available(state, planet.key) then eligible[#eligible + 1] = planet end
+				if consumable_available(state, planet.key) and planet_unlocked(state, planet) then
+					eligible[#eligible + 1] = planet
+				end
 			end
 			local planet = #eligible > 0 and eligible[stream:integer(1, #eligible)] or nil
 			if planet then
@@ -3621,9 +3687,10 @@ local function visit_shop(state, ordered_keys)
 		elseif action.type == "reroll" then
 			reroll_requested, requested_reroll_cost = true, action.cost
 			break
-		elseif action.type == "buy" then
+		elseif action.type == "buy" or action.type == "buy_and_use" then
 			local choice = copy_map(offers[action.offer_index])
 			choice.offer_index = action.offer_index
+			choice.use_now = action.type == "buy_and_use" or nil
 			if not (choice.type == "joker" and choice.edition == "negative" and choice.cost == 0) then
 				count_shop_decision(state)
 			end
@@ -3636,7 +3703,7 @@ local function visit_shop(state, ordered_keys)
 			end
 			log_with({
 				type = "shop_decision", shop_id = shop_id,
-				chosen = "buy_" .. tostring(choice.type) .. ":" .. tostring(choice.key),
+				chosen = (choice.use_now and "buy_and_use_" or "buy_") .. tostring(choice.type) .. ":" .. tostring(choice.key),
 				offered = table.concat(all_offered_keys, ","), supported = table.concat(supported_keys, ","),
 				evaluated = all_evaluated, replacement = choice.sell_key or choice.sell_consumable_key,
 				ante = state.ante, round = state.current_round or state.round,
@@ -3669,7 +3736,9 @@ local function visit_shop(state, ordered_keys)
 				})
 			end
 			state.money = state.money - choice.cost
-			if choice.type == "joker" then
+			if choice.use_now then
+				-- Buy and Use: never stored, used once its purchase is recorded (below)
+			elseif choice.type == "joker" then
 				if not choice.replace_index then
 					state.jokers[#state.jokers + 1] = choice.key
 					initialize_joker(state, choice.key)
@@ -3698,6 +3767,7 @@ local function visit_shop(state, ordered_keys)
 				ante = state.ante,
 				round = state.round,
 			})
+			if choice.use_now then use_bought_consumable(state, choice) end
 			session.purchases = session.purchases + 1
 			session.bought[#session.bought + 1] = choice
 			notify(state, "shop_buy", choice)
@@ -4638,6 +4708,10 @@ end
 function Simulator.consumable_usable(state, consumable)
 	return consumable_usable(state, consumable)
 end
+-- whether a shop offer can be bought and used at once, and whether a Planet is
+-- in the pool yet (a secret hand's Planet once that hand was played).
+Simulator.buy_and_use_ready = buy_and_use_ready
+Simulator.planet_unlocked = planet_unlocked
 
 -- the keys (and _metadata editions) of a headless shop
 -- visit, or of a reroll; visit_shop uses it when no live keys are given.
